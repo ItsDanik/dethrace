@@ -23,6 +23,9 @@ typedef struct tMiSTer_input {
 #define MISTER_OSD_SOUND_VOLUME(s) ((int)(((s) >> 7) & 0xF))   // 0 = 100%, 10 = 0%
 #define MISTER_OSD_MUSIC_VOLUME(s) ((int)(((s) >> 11) & 0xF))  // 0 = 100%, 10 = 0%
 #define MISTER_OSD_RENDERER_ORIGINAL(s) ((int)(((s) >> 15) & 1)) // 0 Optimized, 1 Original
+// 0 MiSTer menu OK/Back, 1.. A, B, X, Y, L, R, Select, Start (see mister_joymap.h)
+#define MISTER_OSD_MENU_OK(s) ((int)(((s) >> 16) & 0xF))
+#define MISTER_OSD_MENU_BACK(s) ((int)(((s) >> 20) & 0xF))
 
 // Set at startup, before the game thread pins itself to CPU0: whether the
 // launcher allowed CPU1, where helper threads (audio, frame copy) then run

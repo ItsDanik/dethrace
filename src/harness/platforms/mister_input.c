@@ -2,6 +2,7 @@
 // FPGA core) and MiSTer joysticks to the PC scancodes the game expects.
 
 #include "mister_input.h"
+#include "mister_joymap.h"
 #include "../dethrace_scancodes.h"
 
 #include <string.h>
@@ -36,6 +37,8 @@ extern br_uint_8 gScan_code[123][2];
 #define JOY_RECOVER (1 << 9)
 #define JOY_MAP (1 << 10)
 #define JOY_PAUSE (1 << 11)
+#define JOY_MENU_OK (1 << 12)
+#define JOY_MENU_BACK (1 << 13)
 
 #define ANALOG_THRESHOLD 48
 
@@ -178,7 +181,9 @@ void MiSTer_Input_Map(const tMiSTer_input* input, br_uint_32 key_state[8]) {
         }
     }
 
-    // joystick 1, analog stick doubles as the d-pad
+    // joystick 1, analog stick doubles as the d-pad. Default buttons (core "jn"):
+    // Accelerate B, Brake Y, Handbrake A, Change View X, Repair L, Map R,
+    // Recover Select, Pause Start; Menu OK/Back unmapped (spare buttons)
     joy = input->joystick[0];
     if (input->analog_x[0] < -ANALOG_THRESHOLD) {
         joy |= JOY_LEFT;
@@ -201,10 +206,10 @@ void MiSTer_Input_Map(const tMiSTer_input* input, br_uint_32 key_state[8]) {
         if (joy & JOY_RIGHT) {
             press_slot(key_state, SLOT_RIGHT);
         }
-        if (joy & (JOY_ACCELERATE | JOY_UP)) {
+        if (joy & JOY_ACCELERATE) {
             press_slot(key_state, SLOT_ACCELERATE);
         }
-        if (joy & (JOY_BRAKE | JOY_DOWN)) {
+        if (joy & JOY_BRAKE) {
             press_slot(key_state, SLOT_BRAKE);
         }
         if (joy & JOY_HANDBRAKE) {
@@ -226,7 +231,11 @@ void MiSTer_Input_Map(const tMiSTer_input* input, br_uint_32 key_state[8]) {
             press_slot(key_state, SLOT_ESCAPE);
         }
     } else {
-        // menus: d-pad = cursor keys, A/Start = Enter, B/Select = Escape
+        // menus: d-pad = cursor keys, Menu OK = Enter, Menu Back = Escape. The
+        // core's Menu OK/Back buttons are for buttons without a race function;
+        // the OSD names a button that has one, see mister_joymap.h
+        br_uint_32 ok_bits, back_bits;
+        MiSTer_JoyMap_MenuButtons(MISTER_OSD_MENU_OK(input->osd_status), MISTER_OSD_MENU_BACK(input->osd_status), &ok_bits, &back_bits);
         if (joy & JOY_LEFT) {
             press(key_state, SCANCODE_LEFT);
         }
@@ -239,10 +248,10 @@ void MiSTer_Input_Map(const tMiSTer_input* input, br_uint_32 key_state[8]) {
         if (joy & JOY_DOWN) {
             press(key_state, SCANCODE_DOWN);
         }
-        if (joy & (JOY_ACCELERATE | JOY_PAUSE)) {
+        if (joy & (JOY_MENU_OK | ok_bits)) {
             press(key_state, SCANCODE_RETURN);
         }
-        if (joy & (JOY_BRAKE | JOY_MAP)) {
+        if (joy & (JOY_MENU_BACK | back_bits)) {
             press(key_state, SCANCODE_ESCAPE);
         }
     }

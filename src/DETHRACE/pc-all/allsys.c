@@ -1120,7 +1120,8 @@ void PDDisplayGoreworthiness(int pGory) {
     gHarness_platform.Sleep(delay_start * 1000);
 }
 
-// Added by dethrace: lets platform drivers map controllers differently in menus and in a race
+// Added by dethrace: lets platform drivers map controllers differently in menus and in a race.
+// The menu opened with Esc during a race keeps `racing` set, so it counts as a menu too.
 int PDIsRacing(void) {
-    return gProgram_state.racing;
+    return gProgram_state.racing && !gInterface_within_race_mode;
 }
