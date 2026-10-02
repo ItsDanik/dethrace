@@ -151,6 +151,8 @@ int PDGetGorePassword(void);
 
 void PDDisplayGoreworthiness(int pGory);
 
+int PDIsRacing(void);
+
 void PDEnterDebugger(char* pStr);
 
 // Added function

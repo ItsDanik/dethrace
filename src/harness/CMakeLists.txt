@@ -18,7 +18,7 @@ endif()
 if(MSVC_42_FOR_RECCMP)
   target_link_libraries(harness PRIVATE brender inih compile_with_werror)
 else()
-  target_link_libraries(harness PRIVATE brender miniaudio stb inih compile_with_werror)
+  target_link_libraries(harness PRIVATE brender inih compile_with_werror)
 endif()
 
 if(NOT MSVC)
@@ -129,6 +129,20 @@ if(DETHRACE_PLATFORM_SDL3)
     else()
         target_link_libraries(harness PRIVATE SDL3::SDL3)
     endif()
+endif()
+
+if(DETHRACE_PLATFORM_MISTER)
+    target_sources(harness PRIVATE
+        platforms/mister.c
+        platforms/mister_audio.c
+        platforms/mister_audio.h
+        platforms/mister_fpga.c
+        platforms/mister_fpga.h
+        platforms/mister_input.c
+        platforms/mister_input.h
+    )
+    target_compile_definitions(harness PRIVATE DETHRACE_PLATFORM_MISTER)
+    target_link_libraries(harness PRIVATE rt)
 endif()
 
 if(DETHRACE_PLATFORM_SDL_DYNAMIC)

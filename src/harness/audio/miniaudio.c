@@ -21,6 +21,11 @@
 #include <stdio.h>
 #include <string.h>
 
+#ifdef DETHRACE_PLATFORM_MISTER
+#include "platforms/mister_audio.h"
+#include <math.h>
+#endif
+
 // duplicates DETHRACE/constants.h but is a necessary evil(?)
 static int kMem_S3_DOS_SOS_channel = 234;
 
@@ -48,16 +53,94 @@ ma_sound cda_sound;
 int cda_sound_initialized;
 int ma_engine_initialized;
 
+#ifdef DETHRACE_PLATFORM_MISTER
+// The MiSTer platform pulls the mix itself and hands it to the FPGA core
+#define MISTER_KNEE 0.75f
+
+// Sound effects (and cutscene audio) and CD music go through separate groups
+// so the OSD volume options can scale them independently
+static ma_sound_group sfx_group;
+static ma_sound_group music_group;
+static int groups_initialized;
+#define SFX_GROUP (groups_initialized ? &sfx_group : NULL)
+#define MUSIC_GROUP (groups_initialized ? &music_group : NULL)
+
+static void mister_apply_volumes(void) {
+    static float sfx = 1.0f, music = 1.0f;
+    float v;
+
+    v = MiSTer_Audio_SoundVolume();
+    if (v != sfx) {
+        sfx = v;
+        ma_sound_group_set_volume(&sfx_group, v);
+    }
+    v = MiSTer_Audio_MusicVolume();
+    if (v != music) {
+        music = v;
+        ma_sound_group_set_volume(&music_group, v);
+    }
+}
+
+static void mister_render(short* out, int frames) {
+    float mix[256 * MISTER_AUDIO_CHANNELS];
+    ma_uint64 read;
+    int n, i;
+    float v;
+
+    if (groups_initialized) {
+        mister_apply_volumes();
+    }
+    while (frames > 0) {
+        n = frames > 256 ? 256 : frames;
+        read = 0;
+        ma_engine_read_pcm_frames(&engine, mix, n, &read);
+        for (i = (int)read * MISTER_AUDIO_CHANNELS; i < n * MISTER_AUDIO_CHANNELS; i++) {
+            mix[i] = 0.0f;
+        }
+        for (i = 0; i < n * MISTER_AUDIO_CHANNELS; i++) {
+            // Soft limiter: linear up to the knee, then compressed towards full
+            // scale. Busy race scenes otherwise clip ~1% of all samples.
+            v = mix[i];
+            if (v > MISTER_KNEE) {
+                v = MISTER_KNEE + (1.0f - MISTER_KNEE) * tanhf((v - MISTER_KNEE) / (1.0f - MISTER_KNEE));
+            } else if (v < -MISTER_KNEE) {
+                v = -MISTER_KNEE - (1.0f - MISTER_KNEE) * tanhf((-v - MISTER_KNEE) / (1.0f - MISTER_KNEE));
+            }
+            out[i] = (short)(v * 32767.0f);
+        }
+        out += n * MISTER_AUDIO_CHANNELS;
+        frames -= n;
+    }
+}
+#else
+#define SFX_GROUP NULL
+#define MUSIC_GROUP NULL
+#endif
+
 tAudioBackend_error_code AudioBackend_Init(void) {
     ma_result result;
     ma_engine_config config;
 
     config = ma_engine_config_init();
+#ifdef DETHRACE_PLATFORM_MISTER
+    if (MiSTer_Audio_Available()) {
+        config.noDevice = MA_TRUE;
+        config.channels = MISTER_AUDIO_CHANNELS;
+        config.sampleRate = MISTER_AUDIO_RATE;
+    }
+#endif
     result = ma_engine_init(&config, &engine);
     if (result != MA_SUCCESS) {
         printf("Failed to initialize audio engine.");
         return eAB_error;
     }
+#ifdef DETHRACE_PLATFORM_MISTER
+    groups_initialized = ma_sound_group_init(&engine, 0, NULL, &sfx_group) == MA_SUCCESS
+        && ma_sound_group_init(&engine, 0, NULL, &music_group) == MA_SUCCESS;
+    if (config.noDevice) {
+        MiSTer_Audio_Start(mister_render);
+    } else
+#endif
     LOG_INFO2("Playback device: '%s'", engine.pDevice->playback.name);
     ma_engine_set_volume(&engine, harness_game_config.volume_multiplier);
     ma_engine_initialized = 1;
@@ -74,6 +157,14 @@ tAudioBackend_error_code AudioBackend_InitCDA(void) {
 }
 
 void AudioBackend_UnInit(void) {
+#ifdef DETHRACE_PLATFORM_MISTER
+    MiSTer_Audio_Stop();
+    if (groups_initialized) {
+        groups_initialized = 0;
+        ma_sound_group_uninit(&sfx_group);
+        ma_sound_group_uninit(&music_group);
+    }
+#endif
     ma_engine_uninit(&engine);
     ma_engine_initialized = 0;
 }
@@ -106,7 +197,7 @@ tAudioBackend_error_code AudioBackend_PlayCDA(int track) {
     // ensure we are not still playing a track
     AudioBackend_StopCDA();
 
-    result = ma_sound_init_from_file(&engine, path, 0, NULL, NULL, &cda_sound);
+    result = ma_sound_init_from_file(&engine, path, 0, MUSIC_GROUP, NULL, &cda_sound);
     if (result != MA_SUCCESS) {
         return eAB_error;
     }
@@ -158,7 +249,7 @@ tAudioBackend_error_code AudioBackend_PlaySample(void* type_struct_sample, int c
     }
 
     flags = MA_SOUND_FLAG_DECODE | MA_SOUND_FLAG_NO_SPATIALIZATION;
-    result = ma_sound_init_from_data_source(&engine, &miniaudio->buffer_ref, flags, NULL, &miniaudio->sound);
+    result = ma_sound_init_from_data_source(&engine, &miniaudio->buffer_ref, flags, SFX_GROUP, &miniaudio->sound);
     if (result != MA_SUCCESS) {
         return eAB_error;
     }
@@ -298,7 +389,7 @@ tAudioBackend_stream* AudioBackend_StreamOpen(int bit_depth, int channels, unsig
         goto failed;
     }
 
-    if (ma_sound_init_from_data_source(&engine, &new->paged_audio_buffer, MA_SOUND_FLAG_NO_PITCH | MA_SOUND_FLAG_NO_SPATIALIZATION, NULL, &new->sound) != MA_SUCCESS) {
+    if (ma_sound_init_from_data_source(&engine, &new->paged_audio_buffer, MA_SOUND_FLAG_NO_PITCH | MA_SOUND_FLAG_NO_SPATIALIZATION, SFX_GROUP, &new->sound) != MA_SUCCESS) {
         LOG_WARN("Failed to create sound from data source");
         goto failed;
     }

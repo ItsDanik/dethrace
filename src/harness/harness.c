@@ -25,8 +25,13 @@ extern void Harness_Platform_Init(tHarness_platform* platform);
 extern const tPlatform_bootstrap SDL1_bootstrap;
 extern const tPlatform_bootstrap SDL2_bootstrap;
 extern const tPlatform_bootstrap SDL3_bootstrap;
+extern const tPlatform_bootstrap MISTER_bootstrap;
 
 static const tPlatform_bootstrap* platform_bootstraps[] = {
+#if defined(DETHRACE_PLATFORM_MISTER)
+    &MISTER_bootstrap,
+#define HAS_PLATFORM_BOOTSTRAP
+#endif
 #if defined(DETHRACE_PLATFORM_SDL3)
     &SDL3_bootstrap,
 #define HAS_PLATFORM_BOOTSTRAP
@@ -589,6 +594,12 @@ int Harness_ProcessIniFile(void) {
 
 // Filesystem hooks
 FILE* Harness_Hook_fopen(const char* pathname, const char* mode) {
+    // Development: benchmarks use a fixed set of graphics options
+    const char* options = getenv("DETHRACE_OPTIONS_FILE");
+    size_t len = strlen(pathname);
+    if (options != NULL && len >= 11 && strcasecmp(pathname + len - 11, "OPTIONS.TXT") == 0) {
+        return OS_fopen(options, mode);
+    }
     return OS_fopen(pathname, mode);
 }
 

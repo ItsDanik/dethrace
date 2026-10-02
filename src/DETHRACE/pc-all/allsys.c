@@ -1119,3 +1119,8 @@ void PDDisplayGoreworthiness(int pGory) {
     delay_start = 2;
     gHarness_platform.Sleep(delay_start * 1000);
 }
+
+// Added by dethrace: lets platform drivers map controllers differently in menus and in a race
+int PDIsRacing(void) {
+    return gProgram_state.racing;
+}
