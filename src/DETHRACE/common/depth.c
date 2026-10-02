@@ -19,6 +19,7 @@
 #include "world.h"
 #include <math.h>
 #include <stdlib.h>
+#include <string.h>
 
 tDepth_effect gDistance_depth_effects[4];
 
@@ -490,7 +491,7 @@ void InitDepthEffects(void) {
 
 // IDA: void __usercall DoDepthByShadeTable(br_pixelmap *pRender_buffer@<EAX>, br_pixelmap *pDepth_buffer@<EDX>, br_pixelmap *pShade_table@<EBX>, int pShade_table_power@<ECX>, int pStart, int pEnd)
 // FUNCTION: CARM95 0x004622cc
-void DoDepthByShadeTable(br_pixelmap* pRender_buffer, br_pixelmap* pDepth_buffer, br_pixelmap* pShade_table, int pShade_table_power, int pStart, int pEnd) {
+static void DoDepthByShadeTable_Original(br_pixelmap* pRender_buffer, br_pixelmap* pDepth_buffer, br_pixelmap* pShade_table, int pShade_table_power, int pStart, int pEnd) {
     tU8* render_ptr;
     tU8* shade_table_pixels;
     tU16* depth_ptr;
@@ -553,6 +554,109 @@ void DoDepthByShadeTable(br_pixelmap* pRender_buffer, br_pixelmap* pDepth_buffer
             depth_ptr += depth_line_skip;
         }
     }
+}
+
+// dethrace: same result as the original, 8 pixels at a time. Most of the
+// screen is sky (depth 0xFFFF) or nearer than the fog start, so whole groups
+// are skipped after one vector test; only fogged pixels do the table lookup.
+typedef tU16 tDepth_vec __attribute__((vector_size(16)));
+
+static void DoDepthByShadeTable_Fast(br_pixelmap* pRender_buffer, br_pixelmap* pDepth_buffer, br_pixelmap* pShade_table, int pShade_table_power, int pStart, int pEnd) {
+    tU8* shade_table_pixels = pShade_table->pixels;
+    tU16 depth_start = (tU16)(0x10000 - (1 << pStart));
+    tU16 too_near = (tU16)(0x10000 - (0x10000 - (1 << pStart)));
+    int depth_shift_amount = pShade_table_power + 8 - pStart - pEnd;
+    int width = pRender_buffer->width;
+    int y, x, k;
+
+    for (y = 0; y < pRender_buffer->height; y++) {
+        tU8* render_ptr = (tU8*)pRender_buffer->pixels + pRender_buffer->base_x + (pRender_buffer->base_y + y) * pRender_buffer->row_bytes;
+        tU16* depth_ptr = (tU16*)((tU8*)pDepth_buffer->pixels + y * pDepth_buffer->row_bytes);
+
+        for (x = 0; x + 8 <= width; x += 8) {
+            tDepth_vec d, depth_value, index;
+            union {
+                tDepth_vec v;
+                tU16 e[8];
+                br_uint_64 q[2];
+            } mask, idx;
+
+            memcpy(&d, depth_ptr + x, sizeof(d));
+            depth_value = d - depth_start;
+            mask.v = (tDepth_vec)((d != 0xFFFF) & (depth_value < too_near));
+            if ((mask.q[0] | mask.q[1]) == 0) {
+                continue;
+            }
+            if (depth_shift_amount > 0) {
+                index = (depth_value << depth_shift_amount) & 0xFF00;
+            } else if (depth_shift_amount < 0) {
+                index = (depth_value >> -depth_shift_amount) & 0xFF00;
+            } else {
+                index = depth_value & 0xFF00;
+            }
+            idx.v = index;
+            for (k = 0; k < 8; k++) {
+                if (mask.e[k]) {
+                    render_ptr[x + k] = shade_table_pixels[render_ptr[x + k] + idx.e[k]];
+                }
+            }
+        }
+        for (; x < width; x++) {
+            if (depth_ptr[x] != 0xFFFF) {
+                tU16 depth_value = depth_ptr[x] - depth_start;
+                if (depth_value < too_near) {
+                    int index = depth_shift_amount > 0 ? (depth_value << depth_shift_amount) & 0xFF00
+                        : depth_shift_amount < 0     ? (depth_value >> -depth_shift_amount) & 0xFF00
+                                                     : depth_value & 0xFF00;
+                    render_ptr[x] = shade_table_pixels[render_ptr[x] + index];
+                }
+            }
+        }
+    }
+}
+
+// BRender pentprim (drivers/pentprim/verify.h): 1 = original rasteriser loops,
+// switched at runtime by the MiSTer OSD. The fog pass follows it.
+extern int gPentprim_reference;
+
+void DoDepthByShadeTable(br_pixelmap* pRender_buffer, br_pixelmap* pDepth_buffer, br_pixelmap* pShade_table, int pShade_table_power, int pStart, int pEnd) {
+    static int verify = -1;
+
+    if (verify < 0) {
+        const char* env = getenv("PENTPRIM_VERIFY");
+        verify = env != NULL && env[0] == '1';
+    }
+    if (verify) {
+        // check the rewrite against the original on a copy of the frame
+        static long frames, mismatches;
+        int rows = pRender_buffer->height;
+        int bytes = pRender_buffer->row_bytes;
+        tU8* base = (tU8*)pRender_buffer->pixels + pRender_buffer->base_y * bytes;
+        tU8* copy = malloc(rows * bytes);
+        memcpy(copy, base, rows * bytes);
+        DoDepthByShadeTable_Original(pRender_buffer, pDepth_buffer, pShade_table, pShade_table_power, pStart, pEnd);
+        {
+            tU8* reference = malloc(rows * bytes);
+            memcpy(reference, base, rows * bytes);
+            memcpy(base, copy, rows * bytes);
+            DoDepthByShadeTable_Fast(pRender_buffer, pDepth_buffer, pShade_table, pShade_table_power, pStart, pEnd);
+            frames++;
+            if (memcmp(reference, base, rows * bytes) != 0) {
+                mismatches++;
+                fprintf(stderr, "DoDepthByShadeTable verify: mismatch (%ld of %ld frames)\n", mismatches, frames);
+            } else if (frames % 1000 == 0) {
+                fprintf(stderr, "DoDepthByShadeTable verify: %ld frames, %ld mismatches\n", frames, mismatches);
+            }
+            free(reference);
+        }
+        free(copy);
+        return;
+    }
+    if (gPentprim_reference) {
+        DoDepthByShadeTable_Original(pRender_buffer, pDepth_buffer, pShade_table, pShade_table_power, pStart, pEnd);
+        return;
+    }
+    DoDepthByShadeTable_Fast(pRender_buffer, pDepth_buffer, pShade_table, pShade_table_power, pStart, pEnd);
 }
 
 // IDA: void __usercall ExternalSky(br_pixelmap *pRender_buffer@<EAX>, br_pixelmap *pDepth_buffer@<EDX>, br_actor *pCamera@<EBX>, br_matrix34 *pCamera_to_world@<ECX>)
