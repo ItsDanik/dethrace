@@ -12,6 +12,10 @@
 //   DETHRACE_MISTER_OUT       directory for screenshots/profile/stats (default ".")
 //   DETHRACE_MISTER_SHOTS     take a screenshot every N ms (0 = off)
 //   DETHRACE_MISTER_QUIT_TO_MENU  load the MiSTer menu core when the player quits
+//   DETHRACE_MISTER_FIXED_STEP  benchmark: game time advances by this many ms per
+//                             frame instead of following the clock, and the random
+//                             seed is fixed, so every run renders the same frames.
+//                             Sound is off unless DETHRACE_MISTER_FIXED_SOUND is set
 
 #define _GNU_SOURCE
 #include "harness.h"
@@ -36,9 +40,12 @@
 // Callbacks back into original game code
 extern void QuitGame(void);
 extern int gGraf_spec_index;
+extern int gSound_override;
 
 // BRender pentprim (drivers/pentprim/verify.h): 1 = original rasteriser loops
 extern int gPentprim_reference;
+// 1 = perspective texture mapping by subdivision, not bit-identical
+extern int gPentprim_fast;
 
 static void (*gKeyHandler_func)(void);
 
@@ -73,8 +80,22 @@ static br_uint_32 next_shot_time;
 static int shot_requested;
 static int shot_count;
 
+// DETHRACE_MISTER_FIXED_STEP: game time per frame and the virtual clock
+static br_uint_32 fixed_step_us;
+static br_uint_64 fixed_time_us;
+static br_uint_32 fixed_reads;
+
 static br_uint_32 mister_get_ticks(void) {
     struct timespec now;
+    if (fixed_step_us != 0) {
+        // The clock stands still within a frame, so the frames do not depend on
+        // how often it is read (sound on or off). It only creeps forward once a
+        // loop is clearly waiting for it.
+        if (++fixed_reads > 2000) {
+            fixed_time_us += 20;
+        }
+        return fixed_time_us / 1000;
+    }
     // The game asks for the time very often. The Cortex-A9 has no user readable
     // timer, so CLOCK_MONOTONIC is a syscall; the coarse clock (1ms with HZ=1000)
     // is answered from the vDSO.
@@ -104,6 +125,10 @@ static void sleep_us(br_uint_64 microseconds) {
 }
 
 static void mister_sleep(br_uint_32 milliseconds) {
+    if (fixed_step_us != 0) {
+        fixed_time_us += (br_uint_64)milliseconds * 1000;
+        return;
+    }
     sleep_us((br_uint_64)milliseconds * 1000);
 }
 
@@ -424,12 +449,16 @@ static float osd_volume(int index) {
     return v * v;
 }
 
+// OSD "Lock to 30 FPS"
+static int lock_30fps;
+
 // Applies the OSD options whenever they change
 static void apply_osd_options(br_uint_64 osd) {
+    static const char* const renderer_names[] = { "optimized", "fast", "original", "optimized" };
     static int applied;
     static br_uint_64 last;
     static int renderer_from_env;
-    int original;
+    static int renderer = -1;
 
     if (applied && osd == last) {
         return;
@@ -437,13 +466,18 @@ static void apply_osd_options(br_uint_64 osd) {
     if (!applied) {
         // benchmark/verification environment variables take precedence
         renderer_from_env = getenv("PENTPRIM_REFERENCE") != NULL || getenv("PENTPRIM_VERIFY") != NULL
-            || getenv("PENTPRIM_TIMING") != NULL;
+            || getenv("PENTPRIM_TIMING") != NULL || getenv("PENTPRIM_FAST") != NULL;
     }
     MiSTer_Audio_SetVolumes(osd_volume(MISTER_OSD_SOUND_VOLUME(osd)), osd_volume(MISTER_OSD_MUSIC_VOLUME(osd)));
-    original = MISTER_OSD_RENDERER_ORIGINAL(osd);
-    if (!renderer_from_env && (!applied || original != gPentprim_reference)) {
-        gPentprim_reference = original;
-        printf("mister: %s renderer\n", original ? "original" : "optimized");
+    if (!renderer_from_env && MISTER_OSD_RENDERER(osd) != renderer) {
+        renderer = MISTER_OSD_RENDERER(osd);
+        gPentprim_reference = renderer == 2;
+        gPentprim_fast = renderer == 1;
+        printf("mister: %s renderer\n", renderer_names[renderer]);
+    }
+    if (MISTER_OSD_LOCK_30FPS(osd) != lock_30fps) {
+        lock_30fps = MISTER_OSD_LOCK_30FPS(osd);
+        printf("mister: %s\n", lock_30fps ? "locked to 30 fps" : "frame rate not locked");
     }
     applied = 1;
     last = osd;
@@ -578,11 +612,36 @@ static void limit_fps(void) {
     last_frame_us = mister_get_micros();
 }
 
+// "Lock to 30 FPS": every frame is shown for two fields of the core's 59.6Hz
+// video, which is steadier than a frame rate that floats between 30 and 60.
+// A frame that takes longer goes out as soon as it is done.
+static void wait_two_fields(void) {
+    static br_uint_32 last_field;
+    int i;
+
+    // 100ms at most, in case the core stops counting
+    for (i = 0; i < 200 && (br_uint_32)(MiSTer_FPGA_FieldCounter() - last_field) < 2; i++) {
+        sleep_us(500);
+    }
+    last_field = MiSTer_FPGA_FieldCounter();
+}
+
 static void mister_swap(br_pixelmap* back_buffer) {
+    static int fixed_seeded;
     br_uint_32 now;
 
     last_screen_src = back_buffer;
-    if (harness_game_config.fps != 0) {
+    if (fixed_step_us != 0) {
+        if (!fixed_seeded) {
+            // after the game seeded from the wall clock
+            fixed_seeded = 1;
+            srand(1);
+        }
+        fixed_time_us += fixed_step_us;
+        fixed_reads = 0;
+    } else if (lock_30fps && MiSTer_FPGA_IsOpen()) {
+        wait_two_fields();
+    } else if (harness_game_config.fps != 0) {
         limit_fps();
     }
     if (MiSTer_FPGA_IsOpen()) {
@@ -678,6 +737,16 @@ static int mister_platform_init(tHarness_platform* platform) {
     env = getenv("DETHRACE_MISTER_SCRIPT");
     if (env != NULL) {
         load_script(env);
+    }
+    env = getenv("DETHRACE_MISTER_FIXED_STEP");
+    if (env != NULL) {
+        fixed_step_us = atoi(env) * 1000;
+        // the audio backend runs in real time, which makes runs differ a little:
+        // DETHRACE_MISTER_FIXED_SOUND=1 keeps it on to measure what sound costs
+        if (getenv("DETHRACE_MISTER_FIXED_SOUND") == NULL) {
+            gSound_override = 1;
+        }
+        printf("mister: fixed time step %s ms\n", env);
     }
     // Render on CPU0: Main_MiSTer owns CPU1, and CPU0 has the better DDR3
     // bandwidth. Helper threads (audio) go to CPU1 if the process may use it.

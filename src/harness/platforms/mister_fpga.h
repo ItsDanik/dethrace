@@ -22,10 +22,11 @@ typedef struct tMiSTer_input {
 // is 0, the default: volumes are listed 100%, 90%, .. 0%.
 #define MISTER_OSD_SOUND_VOLUME(s) ((int)(((s) >> 7) & 0xF))   // 0 = 100%, 10 = 0%
 #define MISTER_OSD_MUSIC_VOLUME(s) ((int)(((s) >> 11) & 0xF))  // 0 = 100%, 10 = 0%
-#define MISTER_OSD_RENDERER_ORIGINAL(s) ((int)(((s) >> 15) & 1)) // 0 Optimized, 1 Original
 // 0 MiSTer menu OK/Back, 1.. A, B, X, Y, L, R, Select, Start (see mister_joymap.h)
 #define MISTER_OSD_MENU_OK(s) ((int)(((s) >> 16) & 0xF))
 #define MISTER_OSD_MENU_BACK(s) ((int)(((s) >> 20) & 0xF))
+#define MISTER_OSD_RENDERER(s) ((int)(((s) >> 24) & 3))   // 0 Optimized, 1 Fast, 2 Original
+#define MISTER_OSD_LOCK_30FPS(s) ((int)(((s) >> 26) & 1))
 
 // Set at startup, before the game thread pins itself to CPU0: whether the
 // launcher allowed CPU1, where helper threads (audio, frame copy) then run
@@ -43,6 +44,8 @@ void MiSTer_FPGA_SetMode(int width, int height);
 void MiSTer_FPGA_Present(br_pixelmap* src);
 void MiSTer_FPGA_SetPalette(br_colour* entries);
 void MiSTer_FPGA_ReadInput(tMiSTer_input* input);
+// The core's field counter (59.6Hz), increments every vblank
+br_uint_32 MiSTer_FPGA_FieldCounter(void);
 
 // Audio ring: 16384 stereo frames {R << 16 | L}, played by the core at 44.1kHz
 volatile br_uint_32* MiSTer_FPGA_AudioRing(void);

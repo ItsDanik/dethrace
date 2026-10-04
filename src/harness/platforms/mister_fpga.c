@@ -309,6 +309,10 @@ void MiSTer_FPGA_Present(br_pixelmap* src) {
     pthread_mutex_unlock(&present_lock);
 }
 
+br_uint_32 MiSTer_FPGA_FieldCounter(void) {
+    return status[1];
+}
+
 void MiSTer_FPGA_SetPalette(br_colour* entries) {
     volatile br_uint_32* pal;
     int i;
