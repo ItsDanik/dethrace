@@ -27,6 +27,8 @@ typedef struct tMiSTer_input {
 #define MISTER_OSD_MENU_BACK(s) ((int)(((s) >> 20) & 0xF))
 #define MISTER_OSD_RENDERER(s) ((int)(((s) >> 24) & 3))   // 0 Optimized, 1 Fast, 2 Original
 #define MISTER_OSD_LOCK_30FPS(s) ((int)(((s) >> 26) & 1))
+#define MISTER_OSD_RES_240(s) ((int)(((s) >> 27) & 1))       // 0 320x200, 1 320x240
+#define MISTER_OSD_NO_CUTSCENES(s) ((int)(((s) >> 28) & 1))  // 0 On, 1 Off
 
 // Set at startup, before the game thread pins itself to CPU0: whether the
 // launcher allowed CPU1, where helper threads (audio, frame copy) then run
@@ -39,8 +41,11 @@ int MiSTer_FPGA_IsOpen(void);
 // Returns 0 (and detaches) once the Dethrace core is no longer loaded
 int MiSTer_FPGA_CheckAlive(void);
 
-// Only 320x200 is supported (15kHz progressive)
+// 320x200 or 320x240 (both 15kHz progressive). The mode can be changed while
+// the game runs; the screen is black until the next frame then
 void MiSTer_FPGA_SetMode(int width, int height);
+// 1 if the core loaded has 320x240 (hybrid_host version 6)
+int MiSTer_FPGA_Has240(void);
 void MiSTer_FPGA_Present(br_pixelmap* src);
 void MiSTer_FPGA_SetPalette(br_colour* entries);
 void MiSTer_FPGA_ReadInput(tMiSTer_input* input);

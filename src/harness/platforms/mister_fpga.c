@@ -1,6 +1,6 @@
 // Bridge to the Dethrace FPGA core through shared DDR3 memory.
 //
-// The FPGA side (core/rtl/dethrace_host.sv) scans out one of three 8bpp
+// The FPGA side (hybrid/rtl/hybrid_host.sv) scans out one of three 8bpp
 // framebuffers every frame, reloads the palette when its sequence number
 // changes and publishes input state once per vblank.
 //
@@ -34,9 +34,16 @@
 #define FB_OFFSET 0x100000
 #define FB_SIZE 0x100000
 #define FB_COUNT 3
+#define FB_MAX_BYTES (320 * 240)
 
-#define CTRL_MAGIC 0x48544544   // "DETH"
-#define STATUS_MAGIC 0x53485444 // "DTHS"
+// video modes of hybrid_host that the game uses
+#define MODE_320x200 0
+#define MODE_320x240 3
+#define VERSION_320x240 6
+
+// those of hybrid_host (hybrid/rtl/hybrid_host.sv), which the core uses now
+#define CTRL_MAGIC 0x4259484D   // "MHYB"
+#define STATUS_MAGIC 0x5359484D // "MHYS"
 
 static int mem_fd = -1;
 static volatile br_uint_8* shm;
@@ -45,6 +52,7 @@ static volatile br_uint_32* status;
 
 static int fb_width;
 static int fb_height;
+static int fb_mode;
 static int fb_current;
 static int palette_slot;
 static br_uint_32 palette_seq;
@@ -70,6 +78,7 @@ static pthread_mutex_t ctrl_lock = PTHREAD_MUTEX_INITIALIZER;
 
 static void start_present_thread(void);
 static void stop_present_thread(void);
+static void present_flush(void);
 
 static br_uint_32 alive_frame;
 static struct timespec alive_time;
@@ -80,7 +89,7 @@ static void write_ctrl(void) {
     __sync_synchronize();
     ctrl[2] = palette_seq;
     ctrl[3] = 0;
-    ctrl[1] = fb_current | (palette_slot << 16) | (audio_enabled << 24);
+    ctrl[1] = fb_current | (fb_mode << 12) | (palette_slot << 16) | (audio_enabled << 24);
     ctrl[0] = ctrl_enabled ? CTRL_MAGIC : 0;
     __sync_synchronize();
     pthread_mutex_unlock(&ctrl_lock);
@@ -130,7 +139,7 @@ void MiSTer_FPGA_Close(void) {
     stop_present_thread();
     if (shm != NULL) {
         if (!detached) {
-            // back to the core's test pattern, audio off
+            // back to the core's own picture, audio off
             ctrl_enabled = 0;
             audio_enabled = 0;
             write_ctrl();
@@ -148,23 +157,48 @@ int MiSTer_FPGA_IsOpen(void) {
     return shm != NULL && !detached;
 }
 
+int MiSTer_FPGA_Has240(void) {
+    return MiSTer_FPGA_IsOpen() && status[3] >= VERSION_320x240;
+}
+
 void MiSTer_FPGA_SetMode(int width, int height) {
-    int i;
+    int mode = height == 240 ? MODE_320x240 : MODE_320x200;
+    int i, n;
 
     if (!MiSTer_FPGA_IsOpen()) {
         return;
     }
-    if (width != 320 || height != 200) {
+    if (width != 320 || (height != 200 && height != 240) || (mode == MODE_320x240 && !MiSTer_FPGA_Has240())) {
         fprintf(stderr, "mister: unsupported resolution %dx%d\n", width, height);
         abort();
     }
+    if (fb_width == 0) {
+        for (i = 0; i < FB_COUNT; i++) {
+            memset((void*)(shm + FB_OFFSET + i * FB_SIZE), 0, FB_MAX_BYTES);
+        }
+    } else if (mode == fb_mode) {
+        return;
+    } else {
+        // The frames of the old mode are not ones of the new mode: go through
+        // black (pixel 0). The framebuffer on the screen is cleared once the
+        // core shows another one.
+        present_flush();
+        for (n = 1; n < FB_COUNT; n++) {
+            memset((void*)(shm + FB_OFFSET + (fb_current + n) % FB_COUNT * FB_SIZE), 0, FB_MAX_BYTES);
+        }
+        i = fb_current;
+        fb_current = (fb_current + 1) % FB_COUNT;
+        write_ctrl();
+        for (n = 0; n < 50 && ctrl_enabled && (status[2] & 0xff) == (br_uint_32)i; n++) {
+            sleep_ms(1);
+        }
+        memset((void*)(shm + FB_OFFSET + i * FB_SIZE), 0, FB_MAX_BYTES);
+    }
     fb_width = width;
     fb_height = height;
-    for (i = 0; i < FB_COUNT; i++) {
-        memset((void*)(shm + FB_OFFSET + i * FB_SIZE), 0, width * height);
-    }
-    // The control block is published with the first palette so the test
-    // pattern stays up until the game shows something.
+    fb_mode = mode;
+    // The control block is published with the first palette so the core's
+    // own picture stays up until the game shows something.
     write_ctrl();
     if (!present_threaded) {
         start_present_thread();
@@ -234,8 +268,8 @@ static void start_present_thread(void) {
     }
     CPU_ZERO(&cpu1);
     CPU_SET(1, &cpu1);
-    staging[0] = malloc(fb_width * fb_height);
-    staging[1] = malloc(fb_width * fb_height);
+    staging[0] = malloc(FB_MAX_BYTES);
+    staging[1] = malloc(FB_MAX_BYTES);
     pthread_attr_init(&attr);
     pthread_attr_setaffinity_np(&attr, sizeof(cpu1), &cpu1);
     present_running = 1;

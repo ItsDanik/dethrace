@@ -14,6 +14,7 @@ extern br_uint_8 gScan_code[123][2];
 
 // keymap slots used by the joystick mapping (see KEYMAP_* in DETHRACE/constants.h)
 #define SLOT_ESCAPE 0
+#define SLOT_PRATCAM 35
 #define SLOT_REPAIR 44
 #define SLOT_COCKPIT 45
 #define SLOT_LEFT 46
@@ -39,6 +40,7 @@ extern br_uint_8 gScan_code[123][2];
 #define JOY_PAUSE (1 << 11)
 #define JOY_MENU_OK (1 << 12)
 #define JOY_MENU_BACK (1 << 13)
+#define JOY_PRATCAM (1 << 14)
 
 #define ANALOG_THRESHOLD 48
 
@@ -183,7 +185,7 @@ void MiSTer_Input_Map(const tMiSTer_input* input, br_uint_32 key_state[8]) {
 
     // joystick 1, analog stick doubles as the d-pad. Default buttons (core "jn"):
     // Accelerate B, Brake Y, Handbrake A, Change View X, Repair L, Map R,
-    // Recover Select, Pause Start; Menu OK/Back unmapped (spare buttons)
+    // Recover Select, Pause Start; Menu OK/Back and Pratcam unmapped (spare buttons)
     joy = input->joystick[0];
     if (input->analog_x[0] < -ANALOG_THRESHOLD) {
         joy |= JOY_LEFT;
@@ -229,6 +231,9 @@ void MiSTer_Input_Map(const tMiSTer_input* input, br_uint_32 key_state[8]) {
         }
         if (joy & JOY_PAUSE) {
             press_slot(key_state, SLOT_ESCAPE);
+        }
+        if (joy & JOY_PRATCAM) {
+            press_slot(key_state, SLOT_PRATCAM);
         }
     } else {
         // menus: d-pad = cursor keys, Menu OK = Enter, Menu Back = Escape. The

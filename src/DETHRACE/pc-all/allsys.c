@@ -58,6 +58,18 @@ int gNo_voodoo;
 // GLOBAL: CARM95 0x0051d5d0
 int gSwitched_resolution;
 
+// Added by dethrace (MiSTer, 320x240). The back screen of 320x200 is the
+// top of a buffer of 240 rows, so that the view of a race can be drawn 240
+// rows tall while everything else the game draws stays what it is, see
+// AdjustRenderScreenSize(). The instruments then start at the top of the screen. NULL when the game does not run in 320x200.
+br_pixelmap* gTall_back_screen;
+// set by the platform: draw the race 240 rows tall where that is possible
+int gTall_wanted;
+// the render screen is 240 rows tall
+int gTall_render;
+// the tall back screen holds a frame of a race that is 240 rows tall
+int gTall_frame_ready;
+
 br_pixelmap* gReal_back_screen;
 
 tS32 gJoystick_min1x;
@@ -455,7 +467,12 @@ void PDAllocateScreenAndBack(void) {
     }
     gScreen->origin_x = 0;
     gScreen->origin_y = 0;
-    gBack_screen = BrPixelmapMatch(gScreen, BR_PMMATCH_OFFSCREEN);
+    if (gDOSGfx_initialized && gGraf_spec_index == 0) {
+        gTall_back_screen = BrPixelmapAllocate(BR_PMT_INDEX_8, gScreen->width, TALL_SCREEN_HEIGHT, NULL, BR_PMAF_NORMAL);
+        gBack_screen = BrPixelmapAllocate(BR_PMT_INDEX_8, gScreen->width, gScreen->height, gTall_back_screen->pixels, BR_PMAF_NORMAL);
+    } else {
+        gBack_screen = BrPixelmapMatch(gScreen, BR_PMMATCH_OFFSCREEN);
+    }
     gReal_back_screen = gBack_screen;
     PDLockRealBackScreen(0);
     gBack_screen->origin_x = 0;
@@ -1124,4 +1141,10 @@ void PDDisplayGoreworthiness(int pGory) {
 // The menu opened with Esc during a race keeps `racing` set, so it counts as a menu too.
 int PDIsRacing(void) {
     return gProgram_state.racing && !gInterface_within_race_mode;
+}
+
+// Added by dethrace (MiSTer, 320x240): the frame to show is the one in
+// gTall_back_screen, not only the 200 rows of the back screen at its top
+int PDIsTallFrame(void) {
+    return gTall_frame_ready && PDIsRacing();
 }

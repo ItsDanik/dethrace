@@ -16,6 +16,13 @@
 //                             frame instead of following the clock, and the random
 //                             seed is fixed, so every run renders the same frames.
 //                             Sound is off unless DETHRACE_MISTER_FIXED_SOUND is set
+//   DETHRACE_MISTER_RAST      draw the triangles with the core's FPGA rasteriser (in
+//                             development; also works headless, the core must be loaded)
+//   DETHRACE_MISTER_240       races in 320x240 whatever the OSD option says (also
+//                             headless, for screenshots)
+//   DETHRACE_MISTER_FRAMECRC  write a checksum of every frame presented to
+//                             framecrc.txt, to compare the picture of two
+//                             renderers over a whole fixed step run
 
 #define _GNU_SOURCE
 #include "harness.h"
@@ -25,6 +32,7 @@
 #include "mister_audio.h"
 #include "mister_fpga.h"
 #include "mister_input.h"
+#include "mister_rast.h"
 
 #include <errno.h>
 #include <sched.h>
@@ -41,9 +49,17 @@
 extern void QuitGame(void);
 extern int gGraf_spec_index;
 extern int gSound_override;
+extern int gCut_scene_override;
+// 320x240 (DETHRACE/pc-all/allsys.c): the view of a race drawn 240 rows tall
+extern br_pixelmap* gTall_back_screen;
+extern int gTall_wanted;
+extern int PDIsTallFrame(void);
 
 // BRender pentprim (drivers/pentprim/verify.h): 1 = original rasteriser loops
 extern int gPentprim_reference;
+#ifdef PENTPRIM_STATS
+void PentprimStats_Frame(void);
+#endif
 // 1 = perspective texture mapping by subdivision, not bit-identical
 extern int gPentprim_fast;
 
@@ -290,6 +306,10 @@ static void stats_frame(void) {
     br_uint_64 now = mister_get_micros();
     br_uint_32 dt;
 
+#ifdef PENTPRIM_STATS
+    PentprimStats_Frame();
+#endif
+
     if (last_swap_us != 0) {
         dt = (br_uint_32)(now - last_swap_us);
         if (stats_enabled && frame_count < STATS_MAX_FRAMES) {
@@ -323,6 +343,26 @@ static void stats_frame(void) {
 //
 // Screenshots (binary PPM)
 //
+
+// DETHRACE_MISTER_FRAMECRC: one line per frame presented
+static FILE* framecrc_file;
+
+static void write_framecrc(br_pixelmap* src) {
+    br_uint_32 crc = 0xffffffffu;
+    br_uint_8* row;
+    int x, y, k;
+
+    for (y = 0; y < src->height; y++) {
+        row = (br_uint_8*)src->pixels + y * src->row_bytes;
+        for (x = 0; x < src->width; x++) {
+            crc ^= row[x];
+            for (k = 0; k < 8; k++) {
+                crc = (crc >> 1) ^ (0xedb88320u & -(crc & 1));
+            }
+        }
+    }
+    fprintf(framecrc_file, "%08x\n", ~crc);
+}
 
 static void write_screenshot(br_pixelmap* src) {
     char path[MAX_PATH];
@@ -452,6 +492,18 @@ static float osd_volume(int index) {
 // OSD "Lock to 30 FPS"
 static int lock_30fps;
 
+// OSD "Cutscenes". Only a change of the option touches the game's switch, so
+// -nocutscenes on the command line holds while the option is "On".
+static void apply_cutscene_option(br_uint_64 osd) {
+    static int cutscenes_off;
+
+    if (MISTER_OSD_NO_CUTSCENES(osd) != cutscenes_off) {
+        cutscenes_off = MISTER_OSD_NO_CUTSCENES(osd);
+        gCut_scene_override = cutscenes_off;
+        printf("mister: cutscenes %s\n", cutscenes_off ? "off" : "on");
+    }
+}
+
 // Applies the OSD options whenever they change
 static void apply_osd_options(br_uint_64 osd) {
     static const char* const renderer_names[] = { "optimized", "fast", "original", "optimized" };
@@ -466,7 +518,9 @@ static void apply_osd_options(br_uint_64 osd) {
     if (!applied) {
         // benchmark/verification environment variables take precedence
         renderer_from_env = getenv("PENTPRIM_REFERENCE") != NULL || getenv("PENTPRIM_VERIFY") != NULL
-            || getenv("PENTPRIM_TIMING") != NULL || getenv("PENTPRIM_FAST") != NULL;
+            || getenv("PENTPRIM_TIMING") != NULL || getenv("PENTPRIM_FAST") != NULL
+            || getenv("PENTPRIM_FPGA") != NULL || getenv("PENTPRIM_NULL") != NULL
+            || getenv("DETHRACE_MISTER_RAST") != NULL;
     }
     MiSTer_Audio_SetVolumes(osd_volume(MISTER_OSD_SOUND_VOLUME(osd)), osd_volume(MISTER_OSD_MUSIC_VOLUME(osd)));
     if (!renderer_from_env && MISTER_OSD_RENDERER(osd) != renderer) {
@@ -474,6 +528,11 @@ static void apply_osd_options(br_uint_64 osd) {
         gPentprim_reference = renderer == 2;
         gPentprim_fast = renderer == 1;
         printf("mister: %s renderer\n", renderer_names[renderer]);
+    }
+    apply_cutscene_option(osd);
+    if (getenv("DETHRACE_MISTER_240") == NULL && (MISTER_OSD_RES_240(osd) && MiSTer_FPGA_Has240()) != gTall_wanted) {
+        gTall_wanted = !gTall_wanted;
+        printf("mister: races in %s\n", gTall_wanted ? "320x240" : "320x200");
     }
     if (MISTER_OSD_LOCK_30FPS(osd) != lock_30fps) {
         lock_30fps = MISTER_OSD_LOCK_30FPS(osd);
@@ -570,6 +629,7 @@ static void mister_at_exit(void) {
     FILE* f;
 
     MiSTer_Audio_Stop();
+    MiSTer_Rast_Close();
     MiSTer_FPGA_Close();
     if (back_to_menu) {
         // otherwise the hybrid core launcher just restarts the game
@@ -628,9 +688,22 @@ static void wait_two_fields(void) {
 
 static void mister_swap(br_pixelmap* back_buffer) {
     static int fixed_seeded;
+    static int shown_height = 200;
     br_uint_32 now;
 
+    // 320x240: a race is shown from the tall back screen, of which the back
+    // screen is the 200 rows at the top. Everything else stays 320x200.
+    if (gTall_back_screen != NULL && back_buffer->height == 200 && PDIsTallFrame()) {
+        back_buffer = gTall_back_screen;
+    }
+    if (back_buffer->height != shown_height && (back_buffer->height == 200 || back_buffer->height == 240)) {
+        shown_height = back_buffer->height;
+        MiSTer_FPGA_SetMode(screen_width, shown_height);
+    }
     last_screen_src = back_buffer;
+    if (framecrc_file != NULL) {
+        write_framecrc(back_buffer);
+    }
     if (fixed_step_us != 0) {
         if (!fixed_seeded) {
             // after the game seeded from the wall clock
@@ -730,6 +803,11 @@ static int mister_platform_init(tHarness_platform* platform) {
     if (env != NULL) {
         out_dir = env;
     }
+    if (getenv("DETHRACE_MISTER_FRAMECRC") != NULL) {
+        char path[MAX_PATH];
+        snprintf(path, sizeof(path), "%s/framecrc.txt", out_dir);
+        framecrc_file = fopen(path, "w");
+    }
     env = getenv("DETHRACE_MISTER_SHOTS");
     if (env != NULL) {
         shot_interval_ms = atoi(env);
@@ -759,10 +837,19 @@ static int mister_platform_init(tHarness_platform* platform) {
         CPU_SET(0, &cpus);
         sched_setaffinity(0, sizeof(cpus), &cpus);
     }
-    if (getenv("DETHRACE_MISTER_HEADLESS") == NULL) {
-        MiSTer_FPGA_Open();
+    if (getenv("DETHRACE_MISTER_HEADLESS") == NULL && MiSTer_FPGA_Open()) {
+        // before the intro
+        tMiSTer_input input;
+        MiSTer_FPGA_ReadInput(&input);
+        apply_cutscene_option(input.osd_status);
     }
-    // The core only does 320x200 (640x480 is too slow for the CPU); override a Hires=1 ini
+    if (getenv("DETHRACE_MISTER_RAST") != NULL) {
+        MiSTer_Rast_Open();
+    }
+    if (getenv("DETHRACE_MISTER_240") != NULL && (!MiSTer_FPGA_IsOpen() || MiSTer_FPGA_Has240())) {
+        gTall_wanted = 1;
+    }
+    // 320x200, with races in 320x240 as an option (640x480 is too slow for the CPU); override a Hires=1 ini
     gGraf_spec_index = 0;
     atexit(mister_at_exit);
 

@@ -23,6 +23,14 @@
 #include <math.h>
 #include <stdlib.h>
 
+// BRender pentprim (drivers/pentprim/fpgarast.h): with the FPGA rasteriser,
+// code that reads or writes the render buffers directly asks for them first
+// (1 = colour, 2 = depth to read, 4 = depth to read and write)
+extern int gPentprim_fpga;
+extern void FpgaRast_Sync(int flags);
+extern void FpgaRast_SyncDepthRead(const void* first, br_uint_32 bytes);
+extern void FpgaRast_DepthWritten(const void* first, br_uint_32 bytes);
+
 // GLOBAL: CARM95 0x005149e8
 int gNext_spark;
 
@@ -263,6 +271,8 @@ int DrawLine2D(br_vector3* o, br_vector3* p, br_pixelmap* pScreen, br_pixelmap* 
     br_scalar zbuff_inc;
     int darken_count;
     int darken_init;
+    tU8* fpga_rows = NULL;
+    int fpga_bytes = 0;
 
     scr_ptr = (tU8*)pScreen->pixels + pScreen->base_x + pScreen->base_y * pScreen->row_bytes;
     depth_ptr = (tU16*)pDepth_buffer->pixels;
@@ -347,6 +357,14 @@ int DrawLine2D(br_vector3* o, br_vector3* p, br_pixelmap* pScreen, br_pixelmap* 
     }
     x = x1;
     y = y1;
+    if (gPentprim_fpga) {
+        // the colour buffer and the rows of the depth buffer the line crosses
+        // (DrawDot tests and writes depth)
+        fpga_rows = (tU8*)pDepth_buffer->pixels + (y1 < y2 ? y1 : y2) * pDepth_buffer->row_bytes;
+        fpga_bytes = ((y1 < y2 ? y2 - y1 : y1 - y2) + 1) * pDepth_buffer->row_bytes;
+        FpgaRast_Sync(1);
+        FpgaRast_SyncDepthRead(fpga_rows, fpga_bytes);
+    }
     scr_ptr += x1 + y1 * pScreen->row_bytes;
     depth_ptr += x1 + y1 * (pDepth_buffer->row_bytes / 2);
     darken_init = (brightness - 0.001) * (float)shade_table->height;
@@ -402,6 +420,9 @@ int DrawLine2D(br_vector3* o, br_vector3* p, br_pixelmap* pScreen, br_pixelmap* 
                 shade_ptr += shade_table->row_bytes;
             }
         }
+    }
+    if (gPentprim_fpga) {
+        FpgaRast_DepthWritten(fpga_rows, fpga_bytes);
     }
     return 1;
 }
@@ -1098,6 +1119,22 @@ void SmokeCircle(br_vector3* o, br_scalar r, br_scalar extra_z, br_scalar streng
     min_x = -ox;
     ry = r / pAspect;
     l = pRender_screen->height - oy - 1;
+    if (gPentprim_fpga) {
+        // the colour buffer, and the rows of the depth buffer the circle is
+        // tested against: around row l (rows count from the bottom here)
+        int top = l - (int)ry - 2;
+        int bottom = l + (int)ry + 2;
+        if (top < 0) {
+            top = 0;
+        }
+        if (bottom > pDepth_buffer->height - 1) {
+            bottom = pDepth_buffer->height - 1;
+        }
+        FpgaRast_Sync(1);
+        if (bottom >= top) {
+            FpgaRast_SyncDepthRead((tU8*)pDepth_buffer->pixels + top * pDepth_buffer->row_bytes, (bottom - top + 1) * pDepth_buffer->row_bytes);
+        }
+    }
     scr_ptr = pRender_screen->pixels;
     scr_ptr += pRender_screen->base_x + pRender_screen->base_y * pRender_screen->row_bytes + ox + l * pRender_screen->row_bytes;
     depth_ptr = (tU16*)pDepth_buffer->pixels + ox + l * (pDepth_buffer->row_bytes / 2);

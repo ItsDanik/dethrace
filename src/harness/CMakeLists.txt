@@ -142,6 +142,8 @@ if(DETHRACE_PLATFORM_MISTER)
         platforms/mister_input.h
         platforms/mister_joymap.c
         platforms/mister_joymap.h
+        platforms/mister_rast.c
+        platforms/mister_rast.h
     )
     target_compile_definitions(harness PRIVATE DETHRACE_PLATFORM_MISTER)
     target_link_libraries(harness PRIVATE rt)

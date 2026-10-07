@@ -27,6 +27,7 @@
 // core buttons: bit 4.. in the order of the core's "J1," list
 #define CORE_FIRST 4
 #define CORE_RACE_LAST 11 // Accelerate .. Pause; Menu OK/Back have no default
+#define CORE_PRATCAM 14   // after Menu OK/Back, no default either
 
 // Default mapping of the core buttons to named buttons (index into A, B, X, Y,
 // L, R, Select, Start), must match "jn," in core/Dethrace.sv
@@ -148,8 +149,8 @@ static br_uint_32 core_bits_for_code(const br_uint_32 core[MAP_ENTRIES], br_uint
     if (code == 0) {
         return 0;
     }
-    for (i = CORE_FIRST; i <= CORE_RACE_LAST; i++) {
-        if ((core[i] & 0xFFFF) == code || (core[i] >> 16) == code) {
+    for (i = CORE_FIRST; i <= CORE_PRATCAM; i++) {
+        if ((i <= CORE_RACE_LAST || i == CORE_PRATCAM) && ((core[i] & 0xFFFF) == code || (core[i] >> 16) == code)) {
             bits |= 1u << i;
         }
     }

@@ -363,8 +363,13 @@ void DimRectangle(br_pixelmap* pPixelmap, int pLeft, int pTop, int pRight, int p
 // FUNCTION: CARM95 0x004c479c
 void DimAFewBits(void) {
     int i;
+    int shift;
 
     for (i = 0; i < gProgram_state.current_car.dim_count[gProgram_state.cockpit_on && gProgram_state.cockpit_image_index >= 0 ? 1 : 0]; i++) {
+        // dethrace (MiSTer, 320x240): the ones behind the instruments at the
+        // bottom of the screen go down with them
+        shift = gTall_render && gProgram_state.current_car.dim_top[0][i] >= gBack_screen->height / 2 ? TALL_BOTTOM_SHIFT : 0;
+        ShiftBackScreen(shift);
         DimRectangle(
             gBack_screen,
             gProgram_state.current_car.dim_left[gProgram_state.cockpit_on && gProgram_state.cockpit_image_index >= 0 ? 1 : 0][i],
@@ -372,6 +377,7 @@ void DimAFewBits(void) {
             gProgram_state.current_car.dim_right[gProgram_state.cockpit_on && gProgram_state.cockpit_image_index >= 0 ? 1 : 0][i],
             gProgram_state.current_car.dim_bottom[gProgram_state.cockpit_on && gProgram_state.cockpit_image_index >= 0 ? 1 : 0][i],
             1);
+        ShiftBackScreen(-shift);
     }
 }
 

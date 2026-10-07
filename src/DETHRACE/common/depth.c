@@ -618,10 +618,31 @@ static void DoDepthByShadeTable_Fast(br_pixelmap* pRender_buffer, br_pixelmap* p
 // BRender pentprim (drivers/pentprim/verify.h): 1 = original rasteriser loops,
 // switched at runtime by the MiSTer OSD. The fog pass follows it.
 extern int gPentprim_reference;
+extern int gPentprim_null;
+// BRender pentprim (drivers/pentprim/fpgarast.h): with the FPGA rasteriser,
+// code that reads or writes the render buffers directly asks for them first
+// (1 = colour, 2 = depth to read)
+extern int gPentprim_fpga;
+extern void FpgaRast_Sync(int flags);
+// the fog pass as a command for the FPGA rasteriser; 0 if it has to be done here
+extern int FpgaRast_Fog(void* colour, void* depth, int width, int rows, br_uint_32 colour_stride, br_uint_32 depth_stride,
+    br_uint_32 start, br_uint_32 too_near, int shift, const void* table, br_uint_32 table_size);
 
 void DoDepthByShadeTable(br_pixelmap* pRender_buffer, br_pixelmap* pDepth_buffer, br_pixelmap* pShade_table, int pShade_table_power, int pStart, int pEnd) {
     static int verify = -1;
 
+    if (gPentprim_fpga && getenv("PENTPRIM_VERIFY") == NULL) {
+        // same arithmetic as DoDepthByShadeTable_Fast
+        if (FpgaRast_Fog((tU8*)pRender_buffer->pixels + pRender_buffer->base_x + pRender_buffer->base_y * pRender_buffer->row_bytes,
+                pDepth_buffer->pixels, pRender_buffer->width, pRender_buffer->height, pRender_buffer->row_bytes, pDepth_buffer->row_bytes,
+                0x10000 - (1 << pStart), (tU16)(1 << pStart), pShade_table_power + 8 - pStart - pEnd,
+                pShade_table->pixels, pShade_table->row_bytes * pShade_table->height)) {
+            return;
+        }
+    }
+    if (gPentprim_fpga) {
+        FpgaRast_Sync(1 | 2);
+    }
     if (verify < 0) {
         const char* env = getenv("PENTPRIM_VERIFY");
         verify = env != NULL && env[0] == '1';
@@ -654,6 +675,9 @@ void DoDepthByShadeTable(br_pixelmap* pRender_buffer, br_pixelmap* pDepth_buffer
     }
     if (gPentprim_reference) {
         DoDepthByShadeTable_Original(pRender_buffer, pDepth_buffer, pShade_table, pShade_table_power, pStart, pEnd);
+        return;
+    }
+    if (gPentprim_null) {
         return;
     }
     DoDepthByShadeTable_Fast(pRender_buffer, pDepth_buffer, pShade_table, pShade_table_power, pStart, pEnd);

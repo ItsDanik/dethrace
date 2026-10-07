@@ -153,6 +153,18 @@ void PDDisplayGoreworthiness(int pGory);
 
 int PDIsRacing(void);
 
+// Added by dethrace (MiSTer, 320x240), see pc-all/allsys.c
+#define TALL_SCREEN_HEIGHT 240
+extern br_pixelmap* gTall_back_screen;
+extern int gTall_wanted;
+extern int gTall_render;
+extern int gTall_frame_ready;
+int PDIsTallFrame(void);
+// common/graphics.c: what is drawn at the bottom of the screen goes this many
+// rows lower when the view is 240 rows tall
+#define TALL_BOTTOM_SHIFT 34
+void ShiftBackScreen(int pRows);
+
 void PDEnterDebugger(char* pStr);
 
 // Added function

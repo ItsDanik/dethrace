@@ -39,6 +39,13 @@
 
 #include <math.h>
 
+// BRender pentprim (drivers/pentprim/fpgarast.h): fill rows of a render
+// buffer through the FPGA rasteriser; 0 when it is not in use
+extern int FpgaRast_Fill(void* pixels, br_uint_32 row_bytes, br_uint_32 rows, br_uint_32 stride, br_uint_32 pattern, int depth);
+// keep the colour buffer with the FPGA rasteriser across the scenes of a frame
+// (car shadows are scenes of their own) instead of fetching it after each
+extern void FpgaRast_Hold(int hold);
+
 // GLOBAL: CARM95 0x00520040
 int gPalette_munged;
 
@@ -794,7 +801,8 @@ void SetBRenderScreenAndBuffers(int pX_offset, int pY_offset, int pWidth, int pH
     if (gBack_screen == NULL) {
         FatalError(kFatalError_AllocateOffScreenBuffer);
     }
-    gDepth_buffer = BrPixelmapMatch(gBack_screen, BR_PMMATCH_DEPTH_16);
+    // dethrace (MiSTer, 320x240): deep enough for the tall render screen
+    gDepth_buffer = BrPixelmapMatch(gTall_back_screen != NULL ? gTall_back_screen : gBack_screen, BR_PMMATCH_DEPTH_16);
     if (gDepth_buffer == NULL) {
         FatalError(kFatalError_AllocateZBuffer);
     }
@@ -819,6 +827,20 @@ void SetIntegerMapRenders(void) {
     }
 }
 
+// Added by dethrace (MiSTer, 320x240): the instruments at the bottom of the
+// screen (speed, revs, gear, damage) are drawn this many rows lower when the
+// view is 240 rows tall. They are a few rows above the bottom edge of the 200
+// rows they were laid out for, which makes that 10 rows of the 240.
+// TALL_BOTTOM_SHIFT is in pd/sys.h.
+void ShiftBackScreen(int pRows) {
+    gBack_screen->pixels = (tU8*)gBack_screen->pixels + pRows * gBack_screen->row_bytes;
+}
+
+// Added by dethrace (MiSTer, 320x240)
+static int TallRenderPossible(void) {
+    return gTall_back_screen != NULL && gTall_wanted && !gMap_mode && !gProgram_state.cockpit_on && gRender_indent == 0;
+}
+
 // IDA: void __cdecl AdjustRenderScreenSize()
 // FUNCTION: CARM95 0x004b3895
 void AdjustRenderScreenSize(void) {
@@ -836,6 +858,15 @@ void AdjustRenderScreenSize(void) {
         gRender_screen->base_y = gProgram_state.current_render_top;
         gRender_screen->height = gProgram_state.current_render_bottom - gProgram_state.current_render_top;
         gRender_screen->width = gProgram_state.current_render_right - gProgram_state.current_render_left;
+    }
+    // dethrace (MiSTer, 320x240): the view from outside the car at full size is
+    // drawn over all 240 rows of the tall back screen. The camera is the same,
+    // so it is the same view with more rows. Cockpit, map, a smaller view and
+    // everything that is not the view stay in the 200 rows at the top.
+    gTall_render = TallRenderPossible();
+    gTall_frame_ready = 0;
+    if (gTall_render) {
+        gRender_screen->height = gTall_back_screen->height;
     }
     if (gRender_screen->row_bytes != gRender_screen->width) {
         gRender_screen->flags &= ~BR_PMF_ROW_WHOLEPIXELS;
@@ -1897,6 +1928,11 @@ void RenderAFrame(int pDepth_mask_on) {
     }
 #endif
 
+    // dethrace (MiSTer, 320x240): the option was changed during the race
+    if (TallRenderPossible() != gTall_render) {
+        AdjustRenderScreenSize();
+    }
+
     the_time = GetTotalTime();
     old_pixels = gRender_screen->pixels;
     cockpit_on = gProgram_state.cockpit_on && gProgram_state.cockpit_image_index >= 0 && !gMap_mode;
@@ -1977,7 +2013,11 @@ void RenderAFrame(int pDepth_mask_on) {
     }
     gRender_screen->pixels = (char*)gRender_screen->pixels + x_shift + y_shift * gRender_screen->row_bytes;
     CalculateConcussion(the_time);
-    BrPixelmapRectangleFill(gDepth_buffer, 0, 0, gRender_screen->width, gRender_screen->height, 0xFFFFFFFF);
+    // the FPGA rasteriser clears its own depth buffer
+    if (!FpgaRast_Fill((tU8*)gDepth_buffer->pixels + gDepth_buffer->base_y * gDepth_buffer->row_bytes + gDepth_buffer->base_x * 2,
+            gRender_screen->width * 2, gRender_screen->height, gDepth_buffer->row_bytes, 0xFFFF, 1)) {
+        BrPixelmapRectangleFill(gDepth_buffer, 0, 0, gRender_screen->width, gRender_screen->height, 0xFFFFFFFF);
+    }
     if (gRender_indent && !gMap_mode) {
         BrPixelmapRectangleFill(
             gBack_screen,
@@ -2037,6 +2077,7 @@ void RenderAFrame(int pDepth_mask_on) {
     for (i = 0; i < (gMap_mode && !gSmall_frames_are_slow ? 3 : 1); i++)
 #endif
     {
+        FpgaRast_Hold(1);
         RenderShadows(gUniverse_actor, &gProgram_state.track_spec, gCamera, &gCamera_to_world);
         BrZbSceneRenderBegin(gUniverse_actor, gCamera, gRender_screen, gDepth_buffer);
         ProcessNonTrackActors(gRender_screen, gDepth_buffer, gCamera, &gCamera_to_world, &old_camera_matrix);
@@ -2053,6 +2094,7 @@ void RenderAFrame(int pDepth_mask_on) {
         RenderSparks(gRender_screen, gDepth_buffer, gCamera, &gCamera_to_world, gFrame_period);
         RenderProximityRays(gRender_screen, gDepth_buffer, gCamera, &gCamera_to_world, gFrame_period);
         BrZbSceneRenderEnd();
+        FpgaRast_Hold(0);
     }
 #ifdef DETHRACE_3DFX_PATCH
     PDLockRealBackScreen(1);
@@ -2092,7 +2134,10 @@ void RenderAFrame(int pDepth_mask_on) {
 #endif
 
 #endif
-        BrPixelmapFill(gRearview_depth_buffer, 0xFFFFFFFF);
+        if (!FpgaRast_Fill((tU8*)gRearview_depth_buffer->pixels + gRearview_depth_buffer->base_y * gRearview_depth_buffer->row_bytes + gRearview_depth_buffer->base_x * 2,
+                gRearview_depth_buffer->width * 2, gRearview_depth_buffer->height, gRearview_depth_buffer->row_bytes, 0xFFFF, 1)) {
+            BrPixelmapFill(gRearview_depth_buffer, 0xFFFFFFFF);
+        }
         gRendering_mirror = 1;
         DoSpecialCameraEffect(gRearview_camera, &gRearview_camera_to_world);
         ConditionallyFillWithSky(gRearview_screen);
@@ -2251,7 +2296,13 @@ void RenderAFrame(int pDepth_mask_on) {
         }
 #endif
         DimAFewBits();
+        if (gTall_render) {
+            ShiftBackScreen(TALL_BOTTOM_SHIFT);
+        }
         DoDamageScreen(the_time);
+        if (gTall_render) {
+            ShiftBackScreen(-TALL_BOTTOM_SHIFT);
+        }
         if (!gAction_replay_mode || gAR_fudge_headups) {
             // Added by dethrace
             // Pratcam is drawn on top of the 2d cockpit, so we must ensure that all the 2d pixel
@@ -2260,7 +2311,13 @@ void RenderAFrame(int pDepth_mask_on) {
             DoPratcam(the_time);
             DoHeadups(the_time);
         }
+        if (gTall_render) {
+            ShiftBackScreen(TALL_BOTTOM_SHIFT);
+        }
         DoInstruments(the_time);
+        if (gTall_render) {
+            ShiftBackScreen(-TALL_BOTTOM_SHIFT);
+        }
         DoSteeringWheel(the_time);
         if (!gAction_replay_mode || gAR_fudge_headups) {
             DrawPowerups(the_time);
@@ -2278,6 +2335,7 @@ void RenderAFrame(int pDepth_mask_on) {
         PipeFrameFinish();
     }
     gRender_screen->pixels = old_pixels;
+    gTall_frame_ready = gTall_render;
     if (!gPalette_fade_time || GetRaceTime() > gPalette_fade_time + 500) {
         PDScreenBufferSwap(0);
     }
