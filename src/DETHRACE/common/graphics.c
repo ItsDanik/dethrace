@@ -831,7 +831,7 @@ void SetIntegerMapRenders(void) {
 // screen (speed, revs, gear, damage) are drawn this many rows lower when the
 // view is 240 rows tall. They are a few rows above the bottom edge of the 200
 // rows they were laid out for, which makes that 10 rows of the 240.
-// TALL_BOTTOM_SHIFT is in pd/sys.h.
+// gTall_top_shift and gTall_bottom_shift are in pd/sys.h.
 void ShiftBackScreen(int pRows) {
     gBack_screen->pixels = (tU8*)gBack_screen->pixels + pRows * gBack_screen->row_bytes;
 }
@@ -2297,30 +2297,43 @@ void RenderAFrame(int pDepth_mask_on) {
 #endif
         DimAFewBits();
         if (gTall_render) {
-            ShiftBackScreen(TALL_BOTTOM_SHIFT);
+            ShiftBackScreen(gTall_bottom_shift);
         }
         DoDamageScreen(the_time);
         if (gTall_render) {
-            ShiftBackScreen(-TALL_BOTTOM_SHIFT);
+            ShiftBackScreen(-gTall_bottom_shift);
         }
         if (!gAction_replay_mode || gAR_fudge_headups) {
             // Added by dethrace
             // Pratcam is drawn on top of the 2d cockpit, so we must ensure that all the 2d pixel
             // writes have been flushed to the framebuffer first
             BrPixelmapFlush(gBack_screen);
+            // dethrace (MiSTer, 320x240): the HUD at the top, the top margin down
+            if (gTall_render) {
+                ShiftBackScreen(gTall_top_shift);
+            }
             DoPratcam(the_time);
             DoHeadups(the_time);
+            if (gTall_render) {
+                ShiftBackScreen(-gTall_top_shift);
+            }
         }
         if (gTall_render) {
-            ShiftBackScreen(TALL_BOTTOM_SHIFT);
+            ShiftBackScreen(gTall_bottom_shift);
         }
         DoInstruments(the_time);
         if (gTall_render) {
-            ShiftBackScreen(-TALL_BOTTOM_SHIFT);
+            ShiftBackScreen(-gTall_bottom_shift);
         }
         DoSteeringWheel(the_time);
         if (!gAction_replay_mode || gAR_fudge_headups) {
+            if (gTall_render) {
+                ShiftBackScreen(gTall_top_shift);
+            }
             DrawPowerups(the_time);
+            if (gTall_render) {
+                ShiftBackScreen(-gTall_top_shift);
+            }
         }
     }
     if (gNet_mode != eNet_mode_none) {

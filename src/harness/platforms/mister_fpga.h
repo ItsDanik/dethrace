@@ -3,8 +3,11 @@
 
 #include "brender.h"
 
-// Bridge to the Dethrace FPGA core through shared DDR3 memory.
-// See core/rtl/dethrace_host.sv for the memory layout.
+// Bridge to the Dethrace FPGA core, on the hybrid core library of
+// Hybrid_MiSTer (hybrid/hps/mister_hybrid.h, which the game links): video,
+// palette, input and the field counter here; audio is MH_AudioWrite()
+// (mister_audio.c), messages and the game list MH_UI_Message() and
+// MH_PickGame() (mister.c).
 
 typedef struct tMiSTer_input {
     br_uint_32 frame;          // FPGA field counter, increments every vblank
@@ -22,13 +25,17 @@ typedef struct tMiSTer_input {
 // is 0, the default: volumes are listed 100%, 90%, .. 0%.
 #define MISTER_OSD_SOUND_VOLUME(s) ((int)(((s) >> 7) & 0xF))   // 0 = 100%, 10 = 0%
 #define MISTER_OSD_MUSIC_VOLUME(s) ((int)(((s) >> 11) & 0xF))  // 0 = 100%, 10 = 0%
-// 0 MiSTer menu OK/Back, 1.. A, B, X, Y, L, R, Select, Start (see mister_joymap.h)
+// 0 MiSTer menu OK/Back, 1.. A, B, X, Y, L, R, Select, Start (MH_MenuButtons())
 #define MISTER_OSD_MENU_OK(s) ((int)(((s) >> 16) & 0xF))
 #define MISTER_OSD_MENU_BACK(s) ((int)(((s) >> 20) & 0xF))
 #define MISTER_OSD_RENDERER(s) ((int)(((s) >> 24) & 3))   // 0 Optimized, 1 Fast, 2 Original
 #define MISTER_OSD_LOCK_30FPS(s) ((int)(((s) >> 26) & 1))
 #define MISTER_OSD_RES_240(s) ((int)(((s) >> 27) & 1))       // 0 320x200, 1 320x240
 #define MISTER_OSD_NO_CUTSCENES(s) ((int)(((s) >> 28) & 1))  // 0 On, 1 Off
+// Cheats page: Invulnerability (0 Off, 1 On); the triggers T[56] Instant
+// Repair, T[57] Extra Credits, T[58] Finish Lap are MH_OSDTriggers() bits 0..2
+#define MISTER_OSD_INVULNERABLE(s) ((int)(((s) >> 29) & 1))
+#define MISTER_OSD_NO_RUMBLE(s) ((int)(((s) >> 30) & 1))      // 0 On, 1 Off
 
 // Set at startup, before the game thread pins itself to CPU0: whether the
 // launcher allowed CPU1, where helper threads (audio, frame copy) then run
@@ -51,11 +58,5 @@ void MiSTer_FPGA_SetPalette(br_colour* entries);
 void MiSTer_FPGA_ReadInput(tMiSTer_input* input);
 // The core's field counter (59.6Hz), increments every vblank
 br_uint_32 MiSTer_FPGA_FieldCounter(void);
-
-// Audio ring: 16384 stereo frames {R << 16 | L}, played by the core at 44.1kHz
-volatile br_uint_32* MiSTer_FPGA_AudioRing(void);
-// Stereo frames the core has fetched from the ring so far
-br_uint_32 MiSTer_FPGA_AudioFetchPointer(void);
-void MiSTer_FPGA_SetAudioEnabled(int enabled);
 
 #endif

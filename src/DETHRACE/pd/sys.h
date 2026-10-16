@@ -160,9 +160,16 @@ extern int gTall_wanted;
 extern int gTall_render;
 extern int gTall_frame_ready;
 int PDIsTallFrame(void);
-// common/graphics.c: what is drawn at the bottom of the screen goes this many
-// rows lower when the view is 240 rows tall
-#define TALL_BOTTOM_SHIFT 34
+// common/graphics.c: what is drawn at the top / bottom of the screen goes
+// this many rows lower when the view is 240 rows tall: the player's HUD
+// margins (the MiSTer core's HUD (Top) / HUD (Bottom), set every frame by the
+// platform). The bottom instruments end 5 rows above the bottom of the 200
+// rows, so a margin of M is a shift of 45 - M; the buffer has TALL_SPARE_ROWS
+// below the 240 shown, for the rows of the 200 under those instruments.
+extern int gTall_top_shift;
+extern int gTall_bottom_shift;
+#define TALL_BOTTOM_GAP 5
+#define TALL_SPARE_ROWS 8
 void ShiftBackScreen(int pRows);
 
 void PDEnterDebugger(char* pStr);

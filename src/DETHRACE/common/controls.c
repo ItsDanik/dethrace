@@ -1950,6 +1950,16 @@ void BrakeInstantly(void) {
     BrVector3Set(&gProgram_state.current_car.v, 0.f, 0.f, 0.f);
 }
 
+// Added by dethrace (MiSTer, harness/platforms/mister.c): analog steering,
+// gas and brake from a gamepad, set every frame by the platform. Steering
+// -65535 (left) .. 65535 (right), 0 inside the stick's dead zone; gas and
+// brake 0 .. 65535, -1 while released. They take the place of the joystick
+// axes the game reads otherwise (gJoy_array), only while they are used, so
+// keys and buttons work as before.
+tS32 gAnalog_steering = 0;
+tS32 gAnalog_acc = -1;
+tS32 gAnalog_dec = -1;
+
 // IDA: void __usercall PollCarControls(tU32 pTime_difference@<EAX>)
 // FUNCTION: CARM95 0x004a3d80
 void PollCarControls(tU32 pTime_difference) {
@@ -2014,6 +2024,22 @@ void PollCarControls(tU32 pTime_difference) {
             }
         } else if (KeyIsDown(49) && !gRace_finished && !gProgram_state.current_car.knackered && !gWait_for_it) {
             keys.dec = 1;
+        }
+        // Added by dethrace (MiSTer): the gamepad's analog stick and triggers
+        if (gAnalog_steering < 0) {
+            joystick.left = -gAnalog_steering;
+            joystick.right = 0;
+        } else if (gAnalog_steering > 0) {
+            joystick.left = 0;
+            joystick.right = gAnalog_steering;
+        }
+        if (!gRace_finished && !gProgram_state.current_car.knackered && !gWait_for_it) {
+            if (gAnalog_acc >= 0) {
+                joystick.acc = gAnalog_acc;
+            }
+            if (gAnalog_dec >= 0) {
+                joystick.dec = gAnalog_dec;
+            }
         }
         if (KeyIsDown(55) && c->gear >= 0) {
             keys.change_down = 1;
@@ -2720,5 +2746,36 @@ void DisposeAbuseomatic(void) {
         if (gAbuse_text[i] != NULL) {
             BrMemFree(gAbuse_text[i]);
         }
+    }
+}
+
+// Added by dethrace (MiSTer: the Cheats page of the core's OSD, called once a
+// frame from harness/platforms/mister.c). Only while a race is on, not in a
+// network game. Invulnerability holds while it is on (the car's own flag,
+// without the power-up's icon); the others happen once each:
+// DETHRACE_CHEAT_REPAIR the "Instant repair!" power-up, DETHRACE_CHEAT_CREDITS
+// 10000 credits, DETHRACE_CHEAT_LAP the lap finished, as the game's own cheat.
+void Dethrace_Cheats(int pInvulnerable, int pTriggers) {
+    static int was_invulnerable;
+    tCar_spec* car = &gProgram_state.current_car;
+
+    if (!gProgram_state.racing || gNet_mode != eNet_mode_none) {
+        return;
+    }
+    if (pInvulnerable) {
+        car->invulnerable = 1;
+    } else if (was_invulnerable && gPowerup_array != NULL && gPowerup_array[7].got_time == 0) {
+        // unless the Invulnerability power-up is on
+        car->invulnerable = 0;
+    }
+    was_invulnerable = pInvulnerable;
+    if (pTriggers & 1) {
+        GotPowerup(car, 9);
+    }
+    if (pTriggers & 2) {
+        EarnCredits(10000);
+    }
+    if (pTriggers & 4) {
+        FinishLap(0);
     }
 }

@@ -62,6 +62,9 @@ int gSwitched_resolution;
 // top of a buffer of 240 rows, so that the view of a race can be drawn 240
 // rows tall while everything else the game draws stays what it is, see
 // AdjustRenderScreenSize(). The instruments then start at the top of the screen. NULL when the game does not run in 320x200.
+br_pixelmap* gTall_spare_screen;
+int gTall_top_shift = 0;
+int gTall_bottom_shift = 45 - 10;
 br_pixelmap* gTall_back_screen;
 // set by the platform: draw the race 240 rows tall where that is possible
 int gTall_wanted;
@@ -468,7 +471,9 @@ void PDAllocateScreenAndBack(void) {
     gScreen->origin_x = 0;
     gScreen->origin_y = 0;
     if (gDOSGfx_initialized && gGraf_spec_index == 0) {
-        gTall_back_screen = BrPixelmapAllocate(BR_PMT_INDEX_8, gScreen->width, TALL_SCREEN_HEIGHT, NULL, BR_PMAF_NORMAL);
+        // with spare rows below the 240 shown (TALL_SPARE_ROWS, pd/sys.h)
+        gTall_spare_screen = BrPixelmapAllocate(BR_PMT_INDEX_8, gScreen->width, TALL_SCREEN_HEIGHT + TALL_SPARE_ROWS, NULL, BR_PMAF_NORMAL);
+        gTall_back_screen = BrPixelmapAllocate(BR_PMT_INDEX_8, gScreen->width, TALL_SCREEN_HEIGHT, gTall_spare_screen->pixels, BR_PMAF_NORMAL);
         gBack_screen = BrPixelmapAllocate(BR_PMT_INDEX_8, gScreen->width, gScreen->height, gTall_back_screen->pixels, BR_PMAF_NORMAL);
     } else {
         gBack_screen = BrPixelmapMatch(gScreen, BR_PMMATCH_OFFSCREEN);

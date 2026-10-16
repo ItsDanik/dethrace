@@ -140,13 +140,19 @@ if(DETHRACE_PLATFORM_MISTER)
         platforms/mister_fpga.h
         platforms/mister_input.c
         platforms/mister_input.h
-        platforms/mister_joymap.c
-        platforms/mister_joymap.h
         platforms/mister_rast.c
         platforms/mister_rast.h
     )
+    # The hybrid core library of Hybrid_MiSTer (its hps/ folder, the hybrid/
+    # submodule of Dethrace_MiSTer): -DMISTER_HYBRID_HPS=<path>
+    if(NOT MISTER_HYBRID_HPS)
+        message(FATAL_ERROR "DETHRACE_PLATFORM_MISTER needs -DMISTER_HYBRID_HPS=<Hybrid_MiSTer/hps>")
+    endif()
+    file(GLOB MISTER_HYBRID_SOURCES "${MISTER_HYBRID_HPS}/*.c")
+    target_sources(harness PRIVATE ${MISTER_HYBRID_SOURCES})
+    target_include_directories(harness PUBLIC "${MISTER_HYBRID_HPS}")
     target_compile_definitions(harness PRIVATE DETHRACE_PLATFORM_MISTER)
-    target_link_libraries(harness PRIVATE rt)
+    target_link_libraries(harness PRIVATE rt pthread m)
 endif()
 
 if(DETHRACE_PLATFORM_SDL_DYNAMIC)

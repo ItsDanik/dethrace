@@ -1016,7 +1016,12 @@ void CalcEngineForce(tCar_spec* c, br_scalar dt) {
     } else {
         c->traction_control = 1;
     }
-    if (c->keys.dec || (c->keys.acc && !c->gear) || c->joystick.dec > 0 || (c->joystick.acc > 0 && !c->gear)) {
+    if (c->joystick.dec > 0 && !c->keys.dec && c->gear) {
+        // Added by dethrace (MiSTer): an analog brake (a trigger) brakes in
+        // proportion to how far it is pressed. The code below gives the full
+        // force for any joystick value (dec / 0x10000 is 0 below the top).
+        c->brake_force = (c->initial_brake + c->brake_increase) * (float)c->joystick.dec / 65536.f;
+    } else if (c->keys.dec || (c->keys.acc && !c->gear) || c->joystick.dec > 0 || (c->joystick.acc > 0 && !c->gear)) {
         if (c->joystick.dec > 0) {
             brake_temp = (double)(c->joystick.dec / 0x10000) * c->brake_increase;
             c->brake_force = brake_temp + c->initial_brake;

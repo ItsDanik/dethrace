@@ -34,10 +34,13 @@
 #include "mister_input.h"
 #include "mister_rast.h"
 
+#include <mister_hybrid.h>
+
 #include <errno.h>
 #include <sched.h>
 #include <signal.h>
 #include <stdio.h>
+#include <math.h>
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
@@ -53,6 +56,20 @@ extern int gCut_scene_override;
 // 320x240 (DETHRACE/pc-all/allsys.c): the view of a race drawn 240 rows tall
 extern br_pixelmap* gTall_back_screen;
 extern int gTall_wanted;
+// the rows the instruments go down at 240 lines (pd/sys.h): at the top the
+// HUD margin, at the bottom 45 minus it (TALL_SCREEN_HEIGHT - 200 +
+// TALL_BOTTOM_GAP there)
+extern int gTall_top_shift;
+extern int gTall_bottom_shift;
+#define TALL_BOTTOM_SHIFT_AT_0 45
+// the Cheats page of the OSD (DETHRACE/common/controls.c)
+extern void Dethrace_Cheats(int pInvulnerable, int pTriggers);
+// the strongest impact on the car since the last frame (DETHRACE/common/crush.c)
+extern float gImpact_energy;
+// analog steering, gas and brake (DETHRACE/common/controls.c)
+extern int gAnalog_steering;
+extern int gAnalog_acc;
+extern int gAnalog_dec;
 extern int PDIsTallFrame(void);
 
 // BRender pentprim (drivers/pentprim/verify.h): 1 = original rasteriser loops
@@ -78,7 +95,6 @@ static br_int_32 last_mouse_acc_x, last_mouse_acc_y;
 static int mouse_initialized;
 
 // set when the game shuts down normally (not on a signal or core switch)
-static int game_quit;
 
 
 static br_uint_64 present_us;
@@ -552,6 +568,85 @@ static void set_key(int scancode, int down) {
 }
 
 // Combine script and MiSTer keyboard/joystick state; notify the game on change
+// 240 lines: the HUD margins of the core's OSD (HUD (Top), HUD (Bottom); 10
+// by default) as the rows the instruments go down (pd/sys.h). Read every
+// frame. The two lines are greyed out while races are not in 320x240.
+static void apply_hud_margins(br_uint_64 osd) {
+    int top, bottom;
+
+    MH_SetMenuMask(MISTER_OSD_RES_240(osd) && MiSTer_FPGA_Has240() ? 0 : 1);
+    MH_HudMargins(&top, &bottom);
+    gTall_top_shift = top;
+    gTall_bottom_shift = TALL_BOTTOM_SHIFT_AT_0 - bottom;
+}
+
+// Analog control from the gamepad, for the car (DETHRACE/common/controls.c):
+// steering from the left stick (the core's analog axis of joystick 1), gas
+// from the right trigger and brake from the left one (MH_ReadTriggers(): the
+// core gets no trigger axes, the library reads them from Linux). Released or
+// inside the dead zones they leave the car to the buttons and keys.
+#define STICK_DEAD_ZONE 16    // of 128
+#define TRIGGER_DEAD_ZONE 8   // of 255
+
+static void apply_analog(const tMiSTer_input* input) {
+    int x = input->analog_x[0];
+    int left, right;
+
+    if (x > STICK_DEAD_ZONE || x < -STICK_DEAD_ZONE) {
+        int v = (abs(x) - STICK_DEAD_ZONE) * 65535 / (128 - STICK_DEAD_ZONE);
+        v = v > 65535 ? 65535 : v;
+        gAnalog_steering = x < 0 ? -v : v;
+    } else {
+        gAnalog_steering = 0;
+    }
+    gAnalog_acc = -1;
+    gAnalog_dec = -1;
+    if (MH_ReadTriggers(&left, &right)) {
+        if (right > TRIGGER_DEAD_ZONE) {
+            gAnalog_acc = (right - TRIGGER_DEAD_ZONE) * 65535 / (255 - TRIGGER_DEAD_ZONE);
+        }
+        if (left > TRIGGER_DEAD_ZONE) {
+            gAnalog_dec = (left - TRIGGER_DEAD_ZONE) * 65535 / (255 - TRIGGER_DEAD_ZONE);
+        }
+    }
+}
+
+// Rumble on the gamepad (MH_Rumble(), every controller that can) when the car
+// is hit: the game's impact energy, which also shakes the screen, on a square
+// root (a scrape about 0.005 a light buzz, a crash 0.4 and more full), fading
+// over about a third of a second. OSD option Rumble (status bit 30, 1 = Off).
+#define RUMBLE_FULL_ENERGY 0.4f
+#define RUMBLE_FADE_MS 120.f
+
+static void apply_rumble(br_uint_64 osd) {
+    static float level;
+    static int on;
+    static struct timespec last;
+    struct timespec now;
+    float hit, dt;
+
+    clock_gettime(CLOCK_MONOTONIC, &now);
+    dt = (now.tv_sec - last.tv_sec) * 1000.f + (now.tv_nsec - last.tv_nsec) / 1e6f;
+    last = now;
+    hit = gImpact_energy > 0.f ? 255.f * sqrtf(gImpact_energy / RUMBLE_FULL_ENERGY) : 0.f;
+    gImpact_energy = 0.f;
+    if (MISTER_OSD_NO_RUMBLE(osd)) {
+        hit = 0.f;
+        level = 0.f;
+    }
+    level = level * expf(-dt / RUMBLE_FADE_MS);
+    if (hit > level) {
+        level = hit > 255.f ? 255.f : hit;
+    }
+    if (level >= 8.f) {
+        MH_Rumble((int)level, level * 1.5f > 255.f ? 255 : (int)(level * 1.5f));
+        on = 1;
+    } else if (on) {
+        MH_Rumble(0, 0);
+        on = 0;
+    }
+}
+
 static void update_input(void) {
     tMiSTer_input input;
     br_uint_32 keys[8];
@@ -566,6 +661,10 @@ static void update_input(void) {
         MiSTer_FPGA_ReadInput(&input);
         MiSTer_Input_Map(&input, keys);
         apply_osd_options(input.osd_status);
+        apply_hud_margins(input.osd_status);
+        apply_analog(&input);
+        apply_rumble(input.osd_status);
+        Dethrace_Cheats(MISTER_OSD_INVULNERABLE(input.osd_status), MH_OSDTriggers());
 
         if (!mouse_initialized) {
             mouse_initialized = 1;
@@ -624,24 +723,134 @@ static void run_script(void) {
     }
 }
 
+//
+// The games of the core (package/games.txt of Dethrace_MiSTer): each a DATA
+// folder, Carmageddon's in the game's folder, the Splat Pack's in SPLATPAK/.
+// Which game a DATA folder holds is found as Harness_DetectGameMode() does.
+//
+
+#define EXIT_TO_MENU 0
+#define EXIT_RESTART 42  // danik_hybrid_launch.sh starts the game again
+#define EXIT_RELOADED 43 // the same, after the core has settled
+
+// The player came through the list: quitting a game goes back to it
+static int picked_from_list;
+
+enum { kGame_none, kGame_carma, kGame_carma_demo, kGame_splat, kGame_splat_demo };
+
+static int file_there(const char* dir, const char* path) {
+    char full[512];
+
+    snprintf(full, sizeof(full), "%s/%s", dir, path);
+    return access(full, F_OK) != -1;
+}
+
+static int game_in(const char* dir) {
+    if (!file_there(dir, "DATA/GENERAL.TXT")) {
+        return kGame_none;
+    }
+    if (file_there(dir, "DATA/RACES/CASTLE.TXT")) {
+        return file_there(dir, "DATA/RACES/CASTLE2.TXT") ? kGame_splat : kGame_splat_demo;
+    }
+    if (file_there(dir, "DATA/RACES/CITYB3.TXT") && !file_there(dir, "DATA/RACES/CITYA1.TXT")) {
+        return kGame_carma_demo;
+    }
+    return kGame_carma;
+}
+
+static const struct {
+    int game;
+    const char* id;
+    const char* name;
+    const char* shareware_of;
+    const char* missing;
+} games_known[] = {
+    { kGame_carma, "CARMA", "Carmageddon", NULL,
+        "Carmageddon was not found. Copy its DATA folder (from the CD or GOG's Carmageddon "
+        "Max Pack) into %s/ on the SD card: DATA/GENERAL.TXT must be there." },
+    { kGame_carma_demo, "CARMAD", "Carmageddon Demo", "CARMA", NULL },
+    { kGame_splat, "SPLAT", "Carmageddon: Splat Pack", NULL,
+        "The Splat Pack was not found. Copy its DATA folder (from its CD or GOG's Carmageddon "
+        "Max Pack) to a folder SPLATPAK in %s/ on the SD card." },
+    { kGame_splat_demo, "SPLATD", "Splat Pack Demo", "SPLAT", NULL },
+};
+#define NUM_GAMES_KNOWN (int)(sizeof(games_known) / sizeof(games_known[0]))
+#define NO_GAME "No game data found. Copy Carmageddon's DATA folder to %s/ on the SD card " \
+    "(and the Splat Pack's DATA into a folder SPLATPAK there)."
+
+void MiSTer_SelectGame(void) {
+    static const char* const dirs[2] = { ".", "SPLATPAK" };
+    static const char* const none[] = { NULL };
+    mh_game games[2 + NUM_GAMES_KNOWN];
+    const char* game_dir[2 + NUM_GAMES_KNOWN];
+    int seen[NUM_GAMES_KNOWN] = { 0 };
+    int n = 0, d, g, pick, listed = 0;
+    char text[MH_MSG_COLS + 1];
+
+    if (!MH_IsOpen()) {
+        return;
+    }
+    // the games that are there, as found (no files to look for)
+    for (d = 0; d < 2; d++) {
+        int found = game_in(dirs[d]);
+
+        for (g = 0; g < NUM_GAMES_KNOWN; g++) {
+            if (games_known[g].game == found && !seen[g]) {
+                mh_game game = { games_known[g].id, games_known[g].name, none, games_known[g].shareware_of, NULL };
+
+                seen[g] = 1;
+                game_dir[n] = dirs[d];
+                games[n++] = game;
+            }
+        }
+    }
+    // those of a menu entry that are not, with their message
+    for (g = 0; g < NUM_GAMES_KNOWN; g++) {
+        if (!seen[g] && games_known[g].missing != NULL) {
+            mh_game game = { games_known[g].id, games_known[g].name, MH_NOT_THERE, NULL, games_known[g].missing };
+
+            game_dir[n] = NULL;
+            games[n++] = game;
+        }
+    }
+    pick = MH_PickGame(games, n, NULL, NO_GAME, &listed);
+    if (pick < 0 || game_dir[pick] == NULL) {
+        exit(EXIT_TO_MENU);
+    }
+    picked_from_list = listed;
+    snprintf(text, sizeof(text), "Loading %s...", games[pick].name);
+    MH_UI_Message("Dethrace", text, 0);
+    if (chdir(game_dir[pick]) != 0) {
+        fprintf(stderr, "mister: cannot go into %s\n", game_dir[pick]);
+        exit(EXIT_TO_MENU);
+    }
+    printf("mister: %s (%s)\n", games[pick].name, game_dir[pick]);
+}
+
+static int mister_exit_code(void) {
+    // the player loaded the core again while the game ran
+    if (MH_CoreReloaded()) {
+        return EXIT_RELOADED;
+    }
+    // not if we are quitting because another core was loaded
+    if (picked_from_list && MH_IsOpen()) {
+        return EXIT_RESTART;
+    }
+    return EXIT_TO_MENU;
+}
+
 static void mister_at_exit(void) {
-    int back_to_menu = game_quit && MiSTer_FPGA_IsOpen() && getenv("DETHRACE_MISTER_QUIT_TO_MENU") != NULL;
-    FILE* f;
+    int code = mister_exit_code();
 
     MiSTer_Audio_Stop();
     MiSTer_Rast_Close();
     MiSTer_FPGA_Close();
-    if (back_to_menu) {
-        // otherwise the hybrid core launcher just restarts the game
-        f = fopen("/dev/MiSTer_cmd", "w");
-        if (f != NULL) {
-            fputs("load_core /media/fat/menu.rbf\n", f);
-            fclose(f);
-        }
-    }
     prof_dump();
     stats_dump();
     fflush(stdout);
+    // the launch script starts the game again (back to the list) or goes back
+    // to the MiSTer menu (danik_hybrid_launch.sh)
+    _exit(code);
 }
 
 //
@@ -778,11 +987,14 @@ static int mister_set_window_pos(void* hWnd, int x, int y, int nWidth, int nHeig
 }
 
 static void mister_destroy_window(void) {
-    game_quit = 1;
 }
 
 static int mister_show_error_message(char* title, char* message) {
     fprintf(stderr, "%s: %s\n", title, message);
+    // on the core's purple screen, until the player leaves the core
+    if (MiSTer_FPGA_IsOpen()) {
+        MH_UI_Message(title, message, MH_UI_WAIT | MH_UI_ERROR);
+    }
     return 0;
 }
 
@@ -796,6 +1008,9 @@ static void mister_get_viewport(int* x, int* y, float* width_multiplier, float* 
 static int mister_platform_init(tHarness_platform* platform) {
     const char* env;
 
+    // what is printed is the log (danik_hybrid_launch.sh): line by line, so
+    // that nothing is lost when the game is stopped or waits on a message
+    setvbuf(stdout, NULL, _IOLBF, 0);
     clock_gettime(CLOCK_MONOTONIC, &start_time);
     clock_gettime(CLOCK_MONOTONIC_COARSE, &start_time_coarse);
 

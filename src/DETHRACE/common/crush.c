@@ -26,6 +26,10 @@
 #include <stdlib.h>
 
 // GLOBAL: CARM95 0x00521370
+// Added by dethrace (MiSTer: the gamepad's rumble, harness/platforms/mister.c):
+// the strongest impact on the player's car since the platform last took it
+float gImpact_energy;
+
 float gWobble_spam_y[8] = { 0.0f, -0.15f, 0.4f, 0.15f, -0.4f, 0.25f, 0.0f, -0.25f };
 
 // GLOBAL: CARM95 0x00521390
@@ -858,6 +862,9 @@ void DamageSystems(tCar_spec* pCar, br_vector3* pImpact_point, br_vector3* pEner
             }
         }
         if (pCar->driver == eDriver_local_human) {
+            if (energy_magnitude > gImpact_energy) {
+                gImpact_energy = energy_magnitude;
+            }
             switch (impact_location) {
             case eImpact_left:
                 NewScreenWobble(

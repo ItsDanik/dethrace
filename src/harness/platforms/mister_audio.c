@@ -1,12 +1,15 @@
 // Audio output through the Dethrace FPGA core.
 //
-// The core plays 44.1kHz stereo frames from a 16384 frame ring in shared memory
-// and publishes how far it has fetched. This thread stays LEAD_FRAMES ahead of
-// that pointer, so the FPGA's sample clock paces the whole audio pipeline.
+// The core plays 44.1kHz stereo frames from a ring in shared memory
+// (MH_AudioWrite() of the hybrid core library). This thread stays LEAD_FRAMES
+// ahead of the core, so the FPGA's sample clock paces the whole audio
+// pipeline.
 
 #define _GNU_SOURCE
 #include "mister_audio.h"
 #include "mister_fpga.h"
+
+#include <mister_hybrid.h>
 
 #include <pthread.h>
 #include <sched.h>
@@ -15,59 +18,22 @@
 #include <time.h>
 #include <unistd.h>
 
-#define RING_FRAMES 16384
 #define LEAD_FRAMES 1024 // ~23ms plus up to 128 frames in the core's FIFO
 #define CHUNK_FRAMES 256
-#define POLL_US 2000
 
 static pthread_t audio_thread;
 static volatile int audio_running;
 static tMiSTer_audio_render audio_render;
-static int underruns;
 static volatile float sound_volume = 1.0f;
 static volatile float music_volume = 1.0f;
 
-static void write_ring(volatile br_uint_32* ring, br_uint_32 pos, const br_uint_32* frames, int count) {
-    int i;
-    for (i = 0; i < count; i++) {
-        ring[(pos + i) % RING_FRAMES] = frames[i];
-    }
-}
-
 static void* audio_thread_main(void* arg) {
-    volatile br_uint_32* ring = MiSTer_FPGA_AudioRing();
     br_uint_32 chunk[CHUNK_FRAMES];
-    br_uint_32 fetch;
-    br_uint_32 wr;
-    struct timespec ts = { 0, POLL_US * 1000 };
 
-    int primed = 0;
-
-    wr = MiSTer_FPGA_AudioFetchPointer() + LEAD_FRAMES;
-    while (audio_running) {
-        if (!MiSTer_FPGA_IsOpen()) {
-            break;
-        }
-        fetch = MiSTer_FPGA_AudioFetchPointer();
-        if ((br_int_32)(wr - fetch) < CHUNK_FRAMES / 2 || (br_int_32)(wr - fetch) > RING_FRAMES / 2) {
-            // fell behind (or the core restarted its pointer): skip ahead
-            if (primed) {
-                underruns++;
-                printf("mister: audio underrun (lead %d frames)\n", (br_int_32)(wr - fetch));
-            }
-            wr = fetch + LEAD_FRAMES;
-        }
-        while ((br_int_32)(wr - fetch) < LEAD_FRAMES && audio_running) {
-            audio_render((short*)chunk, CHUNK_FRAMES);
-            if (!MiSTer_FPGA_IsOpen()) {
-                break;
-            }
-            write_ring(ring, wr, chunk, CHUNK_FRAMES);
-            wr += CHUNK_FRAMES;
-            // the core starts fetching at the vblank after audio is enabled
-            primed = primed || fetch != 0;
-        }
-        nanosleep(&ts, NULL);
+    while (audio_running && MiSTer_FPGA_IsOpen()) {
+        audio_render((short*)chunk, CHUNK_FRAMES);
+        // waits until the core has less than LEAD_FRAMES to play
+        MH_AudioWrite(chunk, CHUNK_FRAMES, LEAD_FRAMES);
     }
     return NULL;
 }
@@ -77,16 +43,11 @@ int MiSTer_Audio_Available(void) {
 }
 
 int MiSTer_Audio_Start(tMiSTer_audio_render render) {
-    volatile br_uint_32* ring = MiSTer_FPGA_AudioRing();
     pthread_attr_t attr;
     struct sched_param param;
-    int i;
 
     if (!MiSTer_FPGA_IsOpen() || audio_running) {
         return 0;
-    }
-    for (i = 0; i < RING_FRAMES; i++) {
-        ring[i] = 0;
     }
     audio_render = render;
     audio_running = 1;
@@ -115,7 +76,7 @@ int MiSTer_Audio_Start(tMiSTer_audio_render render) {
         }
     }
     pthread_attr_destroy(&attr);
-    MiSTer_FPGA_SetAudioEnabled(1);
+    MH_AudioEnable(1);
     printf("mister: audio %dHz via FPGA core\n", MISTER_AUDIO_RATE);
     return 1;
 }
@@ -126,10 +87,7 @@ void MiSTer_Audio_Stop(void) {
     }
     audio_running = 0;
     pthread_join(audio_thread, NULL);
-    MiSTer_FPGA_SetAudioEnabled(0);
-    if (underruns) {
-        printf("mister: %d audio underruns\n", underruns);
-    }
+    MH_AudioEnable(0);
 }
 
 void MiSTer_Audio_SetVolumes(float sound, float music) {

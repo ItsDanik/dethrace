@@ -2,7 +2,7 @@
 // FPGA core) and MiSTer joysticks to the PC scancodes the game expects.
 
 #include "mister_input.h"
-#include "mister_joymap.h"
+#include <mister_hybrid.h>
 #include "../dethrace_scancodes.h"
 
 #include <string.h>
@@ -197,10 +197,8 @@ void MiSTer_Input_Map(const tMiSTer_input* input, br_uint_32 key_state[8]) {
     } else if (input->analog_y[0] > ANALOG_THRESHOLD) {
         joy |= JOY_DOWN;
     }
-    if (joy == 0) {
-        return;
-    }
-
+    // (also with no core button pressed: a Menu OK / Back button without a
+    // function in this core reaches the core as none, MH_MenuButtonsPressed())
     if (PDIsRacing()) {
         if (joy & JOY_LEFT) {
             press_slot(key_state, SLOT_LEFT);
@@ -238,9 +236,9 @@ void MiSTer_Input_Map(const tMiSTer_input* input, br_uint_32 key_state[8]) {
     } else {
         // menus: d-pad = cursor keys, Menu OK = Enter, Menu Back = Escape. The
         // core's Menu OK/Back buttons are for buttons without a race function;
-        // the OSD names a button that has one, see mister_joymap.h
-        br_uint_32 ok_bits, back_bits;
-        MiSTer_JoyMap_MenuButtons(MISTER_OSD_MENU_OK(input->osd_status), MISTER_OSD_MENU_BACK(input->osd_status), &ok_bits, &back_bits);
+        // the OSD names a button that has one (MH_MenuButtons(), hybrid/hps)
+        int menu_ok, menu_back;
+        MH_MenuButtonsPressed(input->osd_status, joy, &menu_ok, &menu_back);
         if (joy & JOY_LEFT) {
             press(key_state, SCANCODE_LEFT);
         }
@@ -253,10 +251,10 @@ void MiSTer_Input_Map(const tMiSTer_input* input, br_uint_32 key_state[8]) {
         if (joy & JOY_DOWN) {
             press(key_state, SCANCODE_DOWN);
         }
-        if (joy & (JOY_MENU_OK | ok_bits)) {
+        if ((joy & JOY_MENU_OK) || menu_ok) {
             press(key_state, SCANCODE_RETURN);
         }
-        if (joy & (JOY_MENU_BACK | back_bits)) {
+        if ((joy & JOY_MENU_BACK) || menu_back) {
             press(key_state, SCANCODE_ESCAPE);
         }
     }

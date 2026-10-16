@@ -26,6 +26,9 @@ extern const tPlatform_bootstrap SDL1_bootstrap;
 extern const tPlatform_bootstrap SDL2_bootstrap;
 extern const tPlatform_bootstrap SDL3_bootstrap;
 extern const tPlatform_bootstrap MISTER_bootstrap;
+#if defined(DETHRACE_PLATFORM_MISTER)
+extern void MiSTer_SelectGame(void);
+#endif
 
 static const tPlatform_bootstrap* platform_bootstraps[] = {
 #if defined(DETHRACE_PLATFORM_MISTER)
@@ -329,6 +332,11 @@ int Harness_Init(int* argc, char* argv[]) {
     }
 
     Harness_DetectAndSetWorkingDirectory(argv[0]);
+#if defined(DETHRACE_PLATFORM_MISTER)
+    // MiSTer: the game of the core's menu entry (Carmageddon, Splat Pack), or
+    // the player's pick: goes into its folder, or quits after a message
+    MiSTer_SelectGame();
+#endif
 
     if (harness_game_info.mode == eGame_none) {
         Harness_DetectGameMode();
