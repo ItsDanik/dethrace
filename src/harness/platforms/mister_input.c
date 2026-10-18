@@ -192,9 +192,13 @@ void MiSTer_Input_Map(const tMiSTer_input* input, br_uint_32 key_state[8]) {
     } else if (input->analog_x[0] > ANALOG_THRESHOLD) {
         joy |= JOY_RIGHT;
     }
-    if (input->analog_y[0] < -ANALOG_THRESHOLD) {
+    // up / down only in menus: in a race they would be the accelerate and
+    // brake keys, full on past the threshold, and a racing wheel's gas pedal is
+    // that axis (Main_MiSTer's, hybrid/CLAUDE.md "Racing wheels"), analog
+    // through MH_ReadTriggers() (apply_analog() in mister.c)
+    if (!PDIsRacing() && input->analog_y[0] < -ANALOG_THRESHOLD) {
         joy |= JOY_UP;
-    } else if (input->analog_y[0] > ANALOG_THRESHOLD) {
+    } else if (!PDIsRacing() && input->analog_y[0] > ANALOG_THRESHOLD) {
         joy |= JOY_DOWN;
     }
     // (also with no core button pressed: a Menu OK / Back button without a

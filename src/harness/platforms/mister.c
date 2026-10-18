@@ -36,6 +36,7 @@
 
 #include <mister_hybrid.h>
 
+#include <dirent.h>
 #include <errno.h>
 #include <sched.h>
 #include <signal.h>
@@ -43,6 +44,7 @@
 #include <math.h>
 #include <stdlib.h>
 #include <string.h>
+#include <strings.h>
 #include <time.h>
 #include <ucontext.h>
 #include <sys/syscall.h>
@@ -581,7 +583,8 @@ static void apply_hud_margins(br_uint_64 osd) {
 }
 
 // Analog control from the gamepad, for the car (DETHRACE/common/controls.c):
-// steering from the left stick (the core's analog axis of joystick 1), gas
+// steering from the left stick (the core's analog axis of joystick 1 or 2,
+// whichever is further out: a racing wheel is a player of its own), gas
 // from the right trigger and brake from the left one (MH_ReadTriggers(): the
 // core gets no trigger axes, the library reads them from Linux). Released or
 // inside the dead zones they leave the car to the buttons and keys.
@@ -589,7 +592,7 @@ static void apply_hud_margins(br_uint_64 osd) {
 #define TRIGGER_DEAD_ZONE 8   // of 255
 
 static void apply_analog(const tMiSTer_input* input) {
-    int x = input->analog_x[0];
+    int x = abs(input->analog_x[1]) > abs(input->analog_x[0]) ? input->analog_x[1] : input->analog_x[0];
     int left, right;
 
     if (x > STICK_DEAD_ZONE || x < -STICK_DEAD_ZONE) {
@@ -745,6 +748,63 @@ static int file_there(const char* dir, const char* path) {
     return access(full, F_OK) != -1;
 }
 
+#include "mister_files.h"
+
+static int name_order(const void* a, const void* b) {
+    return strcasecmp(*(const char* const*)a, *(const char* const*)b);
+}
+
+// The first of `files` (grouped by folder) that is not in `dir`, or NULL;
+// *missing how many are not. A file's name may be in any case, as the game
+// opens them (OS_fopen), its folders not. Each folder is read once.
+static const char* first_missing(const char* dir, const char* const* files, int* missing) {
+    char folder[512] = "", path[512];
+    char** names = NULL;
+    int count = 0, cap = 0, i;
+    const char* first = NULL;
+
+    *missing = 0;
+    for (; *files != NULL; files++) {
+        const char* base = strrchr(*files, '/');
+        size_t len = base ? (size_t)(base - *files) : 0;
+
+        base = base ? base + 1 : *files;
+        if (strlen(folder) != len || strncmp(folder, *files, len) != 0) {
+            DIR* d;
+            struct dirent* ent;
+
+            for (i = 0; i < count; i++) {
+                free(names[i]);
+            }
+            count = 0;
+            snprintf(folder, sizeof(folder), "%.*s", (int)len, *files);
+            snprintf(path, sizeof(path), "%s/%s", dir, folder);
+            if ((d = opendir(path)) != NULL) {
+                while ((ent = readdir(d)) != NULL) {
+                    if (count == cap) {
+                        cap = cap ? cap * 2 : 256;
+                        names = realloc(names, cap * sizeof(*names));
+                    }
+                    names[count++] = strdup(ent->d_name);
+                }
+                closedir(d);
+                qsort(names, count, sizeof(*names), name_order);
+            }
+        }
+        if (count == 0 || bsearch(&base, names, count, sizeof(*names), name_order) == NULL) {
+            if (first == NULL) {
+                first = *files;
+            }
+            (*missing)++;
+        }
+    }
+    for (i = 0; i < count; i++) {
+        free(names[i]);
+    }
+    free(names);
+    return first;
+}
+
 static int game_in(const char* dir) {
     if (!file_there(dir, "DATA/GENERAL.TXT")) {
         return kGame_none;
@@ -767,15 +827,15 @@ static const struct {
 } games_known[] = {
     { kGame_carma, "CARMA", "Carmageddon", NULL,
         "Carmageddon was not found. Copy its DATA folder (from the CD or GOG's Carmageddon "
-        "Max Pack) into %s/ on the SD card: DATA/GENERAL.TXT must be there." },
+        "Max Pack) into %s/: DATA/GENERAL.TXT must be there." },
     { kGame_carma_demo, "CARMAD", "Carmageddon Demo", "CARMA", NULL },
     { kGame_splat, "SPLAT", "Carmageddon: Splat Pack", NULL,
         "The Splat Pack was not found. Copy its DATA folder (from its CD or GOG's Carmageddon "
-        "Max Pack) to a folder SPLATPAK in %s/ on the SD card." },
+        "Max Pack) to a folder SPLATPAK in %s/." },
     { kGame_splat_demo, "SPLATD", "Splat Pack Demo", "SPLAT", NULL },
 };
 #define NUM_GAMES_KNOWN (int)(sizeof(games_known) / sizeof(games_known[0]))
-#define NO_GAME "No game data found. Copy Carmageddon's DATA folder to %s/ on the SD card " \
+#define NO_GAME "No game data found. Copy Carmageddon's DATA folder to %s/ " \
     "(and the Splat Pack's DATA into a folder SPLATPAK there)."
 
 void MiSTer_SelectGame(void) {
@@ -820,6 +880,29 @@ void MiSTer_SelectGame(void) {
     picked_from_list = listed;
     snprintf(text, sizeof(text), "Loading %s...", games[pick].name);
     MH_UI_Message("Dethrace", text, 0);
+    // Carmageddon: every file it opens from the start through the first race
+    // (players copy whole folders; hybrid/CLAUDE.md). The demos and the Splat
+    // Pack are only known by the files of game_in().
+    if (strcmp(games[pick].id, "CARMA") == 0) {
+        char message[MH_MSG_ROWS * (MH_MSG_COLS + 1)], more[32] = " is";
+        br_uint_32 t0 = mister_get_ticks();
+        int missing;
+        const char* first = first_missing(game_dir[pick], carma_files, &missing);
+
+        printf("mister: Carmageddon's files checked in %u ms, %d missing\n", (unsigned)(mister_get_ticks() - t0), missing);
+        if (first != NULL) {
+            if (missing > 1) {
+                snprintf(more, sizeof(more), " and %d other files are", missing - 1);
+            }
+            snprintf(message, sizeof(message),
+                "Carmageddon's files are not all there: %s%s missing. Copy its whole DATA folder "
+                "(from the CD or GOG's Carmageddon Max Pack) into %s/.",
+                first, more, MH_GamePath());
+            fprintf(stderr, "mister: %s\n", message);
+            MH_UI_Message("Dethrace", message, MH_UI_WAIT | MH_UI_ERROR);
+            exit(EXIT_TO_MENU);
+        }
+    }
     if (chdir(game_dir[pick]) != 0) {
         fprintf(stderr, "mister: cannot go into %s\n", game_dir[pick]);
         exit(EXIT_TO_MENU);
