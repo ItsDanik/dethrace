@@ -1,8 +1,10 @@
 // Generated: the files Carmageddon opened on the MiSTer from the start through
 // the menus and the first race (GOG's Carmageddon Max Pack, traced with
 // tools/openlog.c on 2026-10-19; CLAUDE.md, "Game data"), but OPTIONS.TXT and
-// KEYMAP_0.TXT, which the game writes. Grouped by folder. The check of
-// MiSTer_SelectGame() (mister.c) looks for each of them, in any case.
+// KEYMAP_0.TXT, which the game writes, and EVALU01.PIX, the evaluation copy's
+// banner, which the game loads if it is there and never uses (not in every GOG
+// copy). Grouped by folder. The check of MiSTer_SelectGame() (mister.c) looks
+// for each of them, in any case.
 
 static const char* const carma_files[] = {
     "DATA/GENERAL.TXT", "DATA/NETDEFLT.TXT", "DATA/OPPONENT.TXT", "DATA/PARTSHOP.TXT",
@@ -145,7 +147,7 @@ static const char* const carma_files[] = {
     "DATA/PIXELMAP/CODGER.PIX", "DATA/PIXELMAP/COLON.PIX", "DATA/PIXELMAP/CURSGIBX.PIX",
     "DATA/PIXELMAP/DEADCAR.PIX", "DATA/PIXELMAP/DECEASED.PIX", "DATA/PIXELMAP/DESTROY.PIX",
     "DATA/PIXELMAP/DRKSCRN.PIX", "DATA/PIXELMAP/EAGLBNT.PIX", "DATA/PIXELMAP/EAGREDL.PIX",
-    "DATA/PIXELMAP/ELBOW.PIX", "DATA/PIXELMAP/EVALU01.PIX", "DATA/PIXELMAP/EXP1.PIX",
+    "DATA/PIXELMAP/ELBOW.PIX", "DATA/PIXELMAP/EXP1.PIX",
     "DATA/PIXELMAP/EXP2.PIX", "DATA/PIXELMAP/EXP3.PIX", "DATA/PIXELMAP/EXP4.PIX",
     "DATA/PIXELMAP/EXP5.PIX", "DATA/PIXELMAP/EXP6.PIX", "DATA/PIXELMAP/EXP7.PIX",
     "DATA/PIXELMAP/EXTRASTY.PIX", "DATA/PIXELMAP/EYEBALL.PIX", "DATA/PIXELMAP/FLAMES.PIX",
