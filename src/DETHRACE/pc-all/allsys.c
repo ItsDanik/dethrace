@@ -64,7 +64,7 @@ int gSwitched_resolution;
 // AdjustRenderScreenSize(). The instruments then start at the top of the screen. NULL when the game does not run in 320x200.
 br_pixelmap* gTall_spare_screen;
 int gTall_top_shift = 0;
-int gTall_bottom_shift = 45 - 10;
+int gTall_bottom_shift = 45; // HUD (Bottom) 0, its default (host version 16)
 br_pixelmap* gTall_back_screen;
 // set by the platform: draw the race 240 rows tall where that is possible
 int gTall_wanted;

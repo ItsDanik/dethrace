@@ -570,7 +570,7 @@ static void set_key(int scancode, int down) {
 }
 
 // Combine script and MiSTer keyboard/joystick state; notify the game on change
-// 240 lines: the HUD margins of the core's OSD (HUD (Top), HUD (Bottom); 10
+// 240 lines: the HUD margins of the core's OSD (HUD (Top), HUD (Bottom); 0
 // by default) as the rows the instruments go down (pd/sys.h). Read every
 // frame. The two lines are greyed out while races are not in 320x240.
 static void apply_hud_margins(br_uint_64 osd) {
@@ -838,71 +838,84 @@ static const struct {
 #define NO_GAME "No game data found. Copy Carmageddon's DATA folder to %s/ " \
     "(and the Splat Pack's DATA into a folder SPLATPAK there)."
 
+// Carmageddon in `dir`: every file it opens from the start through the first
+// race (players copy whole folders; hybrid/CLAUDE.md). NULL when they are all
+// there, else the message naming the first missing one, %s for the game's
+// folder (MH_PickGame()). The demos and the Splat Pack are only known by the
+// files of game_in().
+static const char* carma_missing(const char* dir) {
+    static char message[MH_MSG_ROWS * (MH_MSG_COLS + 1)];
+    char more[32] = " is";
+    br_uint_32 t0 = mister_get_ticks();
+    int missing;
+    const char* first = first_missing(dir, carma_files, &missing);
+
+    printf("mister: Carmageddon's files checked in %u ms, %d missing\n", (unsigned)(mister_get_ticks() - t0), missing);
+    if (first == NULL) {
+        return NULL;
+    }
+    if (missing > 1) {
+        snprintf(more, sizeof(more), " and %d other files are", missing - 1);
+    }
+    snprintf(message, sizeof(message),
+        "Carmageddon's files are not all there: %s%s missing. Copy its whole DATA folder "
+        "(from the CD or GOG's Carmageddon Max Pack) into %%s/.",
+        first, more);
+    return message;
+}
+
 void MiSTer_SelectGame(void) {
     static const char* const dirs[2] = { ".", "SPLATPAK" };
-    static const char* const none[] = { NULL };
+    // what game_in() found the game by, from the game's folder: the files
+    // MH_PickGame() looks for, so that the logo has "Checking Game Data..."
+    // and "Game Data OK" under it (host version 17)
+    static const char* const found_in[2][2] = { { "DATA/GENERAL.TXT", NULL }, { "SPLATPAK/DATA/GENERAL.TXT", NULL } };
     mh_game games[2 + NUM_GAMES_KNOWN];
     const char* game_dir[2 + NUM_GAMES_KNOWN];
+    const char* missing[NUM_GAMES_KNOWN] = { NULL };
+    const char* carma = NULL;
     int seen[NUM_GAMES_KNOWN] = { 0 };
     int n = 0, d, g, pick, listed = 0;
-    char text[MH_MSG_COLS + 1];
 
     if (!MH_IsOpen()) {
         return;
     }
-    // the games that are there, as found (no files to look for)
+    // the games that are there, as found; Carmageddon only with all its files
     for (d = 0; d < 2; d++) {
         int found = game_in(dirs[d]);
 
         for (g = 0; g < NUM_GAMES_KNOWN; g++) {
             if (games_known[g].game == found && !seen[g]) {
-                mh_game game = { games_known[g].id, games_known[g].name, none, games_known[g].shareware_of, NULL };
+                mh_game game = { games_known[g].id, games_known[g].name, found_in[d], games_known[g].shareware_of, NULL };
 
                 seen[g] = 1;
+                if (found == kGame_carma && (carma = missing[g] = carma_missing(dirs[d])) != NULL) {
+                    seen[g] = 0;
+                    continue;
+                }
                 game_dir[n] = dirs[d];
                 games[n++] = game;
             }
         }
     }
-    // those of a menu entry that are not, with their message
+    // those of a menu entry that are not, with their message: the logo,
+    // "Checking Game Data..." and the message under it
     for (g = 0; g < NUM_GAMES_KNOWN; g++) {
         if (!seen[g] && games_known[g].missing != NULL) {
-            mh_game game = { games_known[g].id, games_known[g].name, MH_NOT_THERE, NULL, games_known[g].missing };
+            mh_game game = { games_known[g].id, games_known[g].name, MH_NOT_THERE, NULL,
+                missing[g] != NULL ? missing[g] : games_known[g].missing };
 
             game_dir[n] = NULL;
             games[n++] = game;
         }
     }
-    pick = MH_PickGame(games, n, NULL, NO_GAME, &listed);
+    // no game there at all: Carmageddon's missing files when it is the one
+    // that was found
+    pick = MH_PickGame(games, n, NULL, carma != NULL ? carma : NO_GAME, &listed);
     if (pick < 0 || game_dir[pick] == NULL) {
         exit(EXIT_TO_MENU);
     }
     picked_from_list = listed;
-    snprintf(text, sizeof(text), "Loading %s...", games[pick].name);
-    MH_UI_Message("Dethrace", text, 0);
-    // Carmageddon: every file it opens from the start through the first race
-    // (players copy whole folders; hybrid/CLAUDE.md). The demos and the Splat
-    // Pack are only known by the files of game_in().
-    if (strcmp(games[pick].id, "CARMA") == 0) {
-        char message[MH_MSG_ROWS * (MH_MSG_COLS + 1)], more[32] = " is";
-        br_uint_32 t0 = mister_get_ticks();
-        int missing;
-        const char* first = first_missing(game_dir[pick], carma_files, &missing);
-
-        printf("mister: Carmageddon's files checked in %u ms, %d missing\n", (unsigned)(mister_get_ticks() - t0), missing);
-        if (first != NULL) {
-            if (missing > 1) {
-                snprintf(more, sizeof(more), " and %d other files are", missing - 1);
-            }
-            snprintf(message, sizeof(message),
-                "Carmageddon's files are not all there: %s%s missing. Copy its whole DATA folder "
-                "(from the CD or GOG's Carmageddon Max Pack) into %s/.",
-                first, more, MH_GamePath());
-            fprintf(stderr, "mister: %s\n", message);
-            MH_UI_Message("Dethrace", message, MH_UI_WAIT | MH_UI_ERROR);
-            exit(EXIT_TO_MENU);
-        }
-    }
     if (chdir(game_dir[pick]) != 0) {
         fprintf(stderr, "mister: cannot go into %s\n", game_dir[pick]);
         exit(EXIT_TO_MENU);
