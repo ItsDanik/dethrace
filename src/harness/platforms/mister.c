@@ -898,8 +898,8 @@ void MiSTer_SelectGame(void) {
             }
         }
     }
-    // those of a menu entry that are not, with their message: the logo,
-    // "Checking Game Data..." and the message under it
+    // those of a menu entry that are not, with their message: "Checking Game
+    // Data..." under the MiSTer logo, then the message, no game logo
     for (g = 0; g < NUM_GAMES_KNOWN; g++) {
         if (!seen[g] && games_known[g].missing != NULL) {
             mh_game game = { games_known[g].id, games_known[g].name, MH_NOT_THERE, NULL,
